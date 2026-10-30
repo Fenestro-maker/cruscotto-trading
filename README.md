@@ -1,0 +1,1 @@
+# cruscotto-trading
