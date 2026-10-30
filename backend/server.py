@@ -48,6 +48,10 @@ OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")  # OKX Euro
 OKX_API_KEY = os.environ.get("OKX_API_KEY", "")
 OKX_API_SECRET = os.environ.get("OKX_API_SECRET", "")
 OKX_API_PASSPHRASE = os.environ.get("OKX_API_PASSPHRASE", "")
+# Notifiche Telegram: token del bot (da @BotFather) e chat a cui scrivere (backend/telegram_setup.py)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+MONITOR_INTERVAL_S = 20
 
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY mancante in backend/.env")
@@ -75,6 +79,7 @@ DEFAULT_SETTINGS = {
     "risk_pct": 1.0,
     "leverage": 2.0,
     "instruments": ["ETH-USDC-SWAP", "BTC-USDC-SWAP", "SOL-USDC-SWAP"],
+    "profit_alert_usd": 40.0,
 }
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -187,6 +192,7 @@ class SettingsIn(BaseModel):
     risk_pct: float = Field(gt=0, le=MAX_RISK_PCT)
     leverage: float = Field(ge=1, le=MAX_LEVERAGE)
     instruments: list[str] = Field(min_length=1, max_length=20)
+    profit_alert_usd: float = Field(default=40.0, gt=0)
 
     @field_validator("instruments")
     @classmethod
@@ -209,7 +215,8 @@ async def load_settings() -> dict:
 @api.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
     return {**await load_settings(), "rules": rules_info(), "ai_configured": bool(ANTHROPIC_API_KEY), "ai_model": AI_MODEL,
-            "okx_base_url": OKX_BASE_URL, "okx_account": okx_account_configured()}
+            "okx_base_url": OKX_BASE_URL, "okx_account": okx_account_configured(),
+            "telegram_configured": telegram_configured()}
 
 
 @api.put("/settings")
@@ -1069,6 +1076,169 @@ async def import_sessions(items: list[ImportedSession], user: dict = Depends(get
     return {"added": added, "skipped": len(items) - added}
 
 
+# ---------- Notifiche Telegram sulle posizioni OKX ----------
+
+def telegram_configured() -> bool:
+    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
+
+_tg_http: Optional[httpx.AsyncClient] = None
+
+
+async def send_telegram(text: str) -> None:
+    global _tg_http
+    if not telegram_configured():
+        raise HTTPException(status_code=503, detail="Telegram non configurato: mancano TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in backend/.env")
+    if _tg_http is None:
+        _tg_http = httpx.AsyncClient(base_url="https://api.telegram.org", timeout=15)
+    try:
+        r = await _tg_http.post(f"/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"})
+        body = r.json()
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(status_code=502, detail="Telegram non raggiungibile")
+    if not body.get("ok"):
+        raise HTTPException(status_code=502, detail=f"Telegram: {body.get('description') or 'errore'}")
+
+
+async def notify(kind: str, inst: str, text: str) -> None:
+    """Invia la notifica e la registra; un errore di Telegram non deve fermare il controllo"""
+    doc = {"kind": kind, "inst": inst, "text": text, "created_at": now_utc(), "sent": False, "error": ""}
+    try:
+        await send_telegram(text)
+        doc["sent"] = True
+    except HTTPException as e:
+        doc["error"] = str(e.detail)
+        print(f"[notifiche] {kind} {inst}: {e.detail}", flush=True)
+    await db.notifications.insert_one(doc)
+
+
+def money(x: Optional[float]) -> str:
+    return "n/d" if x is None else f"{x:+.2f} $"
+
+
+async def active_session_for(inst: str) -> Optional[dict]:
+    return await db.sessions.find_one({"instrument": inst, "status": {"$in": ["attesa", "aperta"]}})
+
+
+async def last_closed(inst: str) -> Optional[dict]:
+    """Ultima chiusura (anche parziale) registrata da OKX per lo strumento"""
+    rows = await okx_private_get("/api/v5/account/positions-history", {"instId": inst, "limit": "1"})
+    return rows[0] if rows else None
+
+
+async def check_positions() -> None:
+    """Confronta le posizioni OKX con lo stato salvato e notifica: eseguito, chiusura (stop / take profit), guadagno oltre soglia"""
+    settings = await load_settings()
+    threshold = float(settings.get("profit_alert_usd") or 40)
+    positions = {
+        p["instId"]: p for p in await okx_private_get("/api/v5/account/positions") if fnum(p.get("pos"))
+    }
+    states = {d["_id"]: d async for d in db.monitor.find()}
+    # Al primo avvio in assoluto si registra lo stato attuale senza notificare;
+    # da lì in poi uno strumento mai visto parte da posizione zero
+    first_run = not await db.monitor_meta.find_one({"_id": "init"})
+
+    for inst in set(positions) | set(states):
+        p = positions.get(inst)
+        st = states.get(inst)
+        size = abs(fnum(p.get("pos")) or 0) if p else 0.0
+        prev = st["size"] if st else (None if first_run else 0.0)
+        st = st or {}
+        label = instrument_label(inst)
+        session = await active_session_for(inst)
+
+        if prev is None:
+            # Primo controllo su questo strumento: si registra lo stato senza notificare
+            await db.monitor.update_one({"_id": inst}, {"$set": {"size": size, "profit_alerted": False, "partial_taken": False}}, upsert=True)
+            continue
+
+        if prev == 0 and size > 0:
+            side = "LONG" if (p.get("posSide") == "long" or (p.get("posSide") == "net" and (fnum(p.get("pos")) or 0) > 0)) else "SHORT"
+            lines = [f"🟢 <b>Ordine eseguito</b> · {label}", f"{side} {size:g} contratti a {fmt_price(fnum(p.get('avgPx')))}"]
+            if session and session.get("stop") is not None:
+                lines.append(f"Stop {fmt_price(session['stop'])} · TP1 {fmt_price(session.get('tp1'))} · target {fmt_price(session.get('target'))}")
+            lines.append("Controlla che lo stop sia inserito su OKX.")
+            await notify("eseguito", inst, "\n".join(lines))
+            await db.monitor.update_one({"_id": inst}, {"$set": {"size": size, "profit_alerted": False, "partial_taken": False}}, upsert=True)
+            continue
+
+        if size < prev:
+            h = await last_closed(inst)
+            pnl = fnum(h.get("realizedPnl")) if h else None
+            close_px = fmt_price(fnum(h.get("closeAvgPx"))) if h else "n/d"
+            if size > 0:
+                title = "🟡 <b>Chiusura parziale</b> (TP1?)" if (pnl or 0) >= 0 else "🟠 <b>Chiusura parziale in perdita</b>"
+                text = f"{title} · {label}\nChiusi {prev - size:g} contratti a {close_px}, restano {size:g}\nRisultato {money(pnl)}"
+                if (pnl or 0) >= 0:
+                    text += "\nRicorda: stop a pareggio sulla parte rimasta."
+                await notify("parziale", inst, text)
+                await db.monitor.update_one({"_id": inst}, {"$set": {"partial_taken": (pnl or 0) >= 0}})
+            else:
+                if h and h.get("type") in ("3", "4"):
+                    title, kind = "🚨 <b>Posizione liquidata</b>", "liquidazione"
+                elif (pnl or 0) < 0 and st.get("partial_taken"):
+                    title, kind = "⚪ <b>Resto chiuso allo stop dopo TP1</b>", "pareggio"
+                elif (pnl or 0) < 0:
+                    title, kind = "🔴 <b>Stop loss</b>", "stop"
+                else:
+                    title, kind = "✅ <b>Take profit</b>", "take_profit"
+                text = f"{title} · {label}\nPosizione chiusa a {close_px}\nRisultato {money(pnl)}"
+                if session:
+                    text += "\nRegistra l'esito nel cruscotto."
+                await notify(kind, inst, text)
+            reset = {"profit_alerted": False, "partial_taken": False} if size == 0 else {}
+            await db.monitor.update_one({"_id": inst}, {"$set": {"size": size, **reset}})
+            continue
+
+        if size > prev:
+            await db.monitor.update_one({"_id": inst}, {"$set": {"size": size}})
+
+        if size > 0:
+            upl = fnum(p.get("upl")) or 0
+            if upl >= threshold and not st.get("profit_alerted"):
+                text = (f"💰 <b>In guadagno di {upl:.2f} $</b> · {label}\n"
+                        f"Ingresso {fmt_price(fnum(p.get('avgPx')))} · mark {fmt_price(fnum(p.get('markPx')))}")
+                await notify("guadagno", inst, text)
+                await db.monitor.update_one({"_id": inst}, {"$set": {"profit_alerted": True}})
+            elif upl < threshold * 0.75 and st.get("profit_alerted"):
+                # Si riarma se il guadagno torna sotto il 75% della soglia
+                await db.monitor.update_one({"_id": inst}, {"$set": {"profit_alerted": False}})
+
+    if first_run:
+        await db.monitor_meta.update_one({"_id": "init"}, {"$set": {"at": now_utc()}}, upsert=True)
+
+
+def instrument_label(inst: str) -> str:
+    m = re.match(r"^([A-Z0-9]+)-([A-Z]+)_[A-Z]+_XPERP-\d{6}$", inst)
+    return f"{m.group(1)}{m.group(2)} X-Perp" if m else inst
+
+
+async def monitor_loop() -> None:
+    while True:
+        if okx_account_configured():
+            try:
+                await check_positions()
+            except HTTPException as e:
+                print(f"[notifiche] controllo non riuscito: {e.detail}", flush=True)
+            except Exception as e:  # il ciclo non deve mai fermarsi
+                print(f"[notifiche] errore inatteso: {e!r}", flush=True)
+        await asyncio.sleep(MONITOR_INTERVAL_S)
+
+
+@api.post("/notifications/test")
+async def test_notification(user: dict = Depends(get_current_user)):
+    await send_telegram("🔔 Notifica di prova dal cruscotto di trading: Telegram funziona.")
+    return {"ok": True}
+
+
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(get_current_user)):
+    docs = await db.notifications.find().sort("created_at", -1).to_list(30)
+    return [{"kind": d["kind"], "inst": d["inst"], "text": d["text"], "sent": d["sent"], "error": d.get("error", ""),
+             "created_at": iso(d["created_at"])} for d in docs]
+
+
 app.include_router(api)
 
 
@@ -1077,10 +1247,14 @@ async def create_indexes():
     await db.users.create_index("email", unique=True)
     await db.sessions.create_index("created_at")
     await db.analyses.create_index("created_at")
+    await db.notifications.create_index("created_at")
+    app.state.monitor = asyncio.create_task(monitor_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    if getattr(app.state, "monitor", None):
+        app.state.monitor.cancel()
     if _okx_http is not None:
         await _okx_http.aclose()
     client.close()

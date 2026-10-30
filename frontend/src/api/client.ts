@@ -45,11 +45,13 @@ export interface Settings {
   risk_pct: number;
   leverage: number;
   instruments: string[];
+  profit_alert_usd: number;
   rules: Rules;
   ai_configured: boolean;
   ai_model: string;
   okx_base_url: string;
   okx_account: boolean;
+  telegram_configured: boolean;
 }
 
 export type Timeframe = '1W' | '1D' | '4H' | '1H' | '15m';
@@ -287,7 +289,21 @@ export const authApi = {
 
 export const settingsApi = {
   get: () => api.get<Settings>('/settings'),
-  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments'>) => api.put<Settings>('/settings', data),
+  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments' | 'profit_alert_usd'>) => api.put<Settings>('/settings', data),
+};
+
+export interface NotificationItem {
+  kind: string;
+  inst: string;
+  text: string;
+  sent: boolean;
+  error: string;
+  created_at: string;
+}
+
+export const notificationsApi = {
+  list: () => api.get<NotificationItem[]>('/notifications'),
+  test: () => api.post('/notifications/test'),
 };
 
 export const marketApi = {

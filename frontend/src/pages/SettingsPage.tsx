@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { errorMessage, settingsApi } from '@/api/client';
 import type { Settings } from '@/api/client';
 import { Alert, Button, Card, Field, Input, Textarea } from '@/components/ui';
+import NotificationsCard from '@/components/NotificationsCard';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -10,6 +11,7 @@ export default function SettingsPage() {
   const [risk, setRisk] = useState('');
   const [leverage, setLeverage] = useState('');
   const [instruments, setInstruments] = useState('');
+  const [profitAlert, setProfitAlert] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -20,6 +22,7 @@ export default function SettingsPage() {
     setRisk(String(s.risk_pct));
     setLeverage(String(s.leverage));
     setInstruments(s.instruments.join('\n'));
+    setProfitAlert(String(s.profit_alert_usd));
   };
 
   useEffect(() => {
@@ -37,6 +40,7 @@ export default function SettingsPage() {
         risk_pct: parseFloat(risk.replace(',', '.')),
         leverage: parseFloat(leverage.replace(',', '.')),
         instruments: instruments.split(/[\s,]+/).filter(Boolean),
+        profit_alert_usd: parseFloat(profitAlert.replace(',', '.')),
       });
       fill(data);
       setSaved(true);
@@ -65,6 +69,9 @@ export default function SettingsPage() {
           </Field>
           <Field label="Strumenti OKX (uno per riga)" hint="Codici API di OKX. Su OKX Europa gli X-Perp sono del tipo ETH-USD_UM_XPERP-310404">
             <Textarea rows={4} className="num" value={instruments} onChange={(e) => setInstruments(e.target.value)} />
+          </Field>
+          <Field label="Notifica di guadagno ($)" hint="Telegram ti avvisa quando una posizione aperta guadagna almeno questa cifra">
+            <Input inputMode="decimal" className="num" value={profitAlert} onChange={(e) => setProfitAlert(e.target.value)} />
           </Field>
           {error && <Alert tone="error">{error}</Alert>}
           {saved && <Alert tone="ok">Impostazioni salvate</Alert>}
@@ -96,6 +103,7 @@ export default function SettingsPage() {
           </p>
           <p className="mt-3 text-xs text-slate-500">Nessun ordine viene inviato a OKX da questa piattaforma.</p>
         </Card>
+        <NotificationsCard configured={settings.telegram_configured} />
       </div>
     </div>
   );
