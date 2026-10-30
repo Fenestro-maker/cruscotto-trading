@@ -48,6 +48,8 @@ export interface Settings {
   rules: Rules;
   ai_configured: boolean;
   ai_model: string;
+  okx_base_url: string;
+  okx_account: boolean;
 }
 
 export type Timeframe = '1W' | '1D' | '4H' | '1H' | '15m';
@@ -204,6 +206,74 @@ export interface Stats {
   by_instrument: StatsGroup[];
   by_setup: StatsGroup[];
 }
+
+// Conto OKX in sola lettura
+export interface OkxPosition {
+  inst: string;
+  pos: number;          // contratti; negativo = short in modalità net
+  pos_side: string;     // net | long | short
+  avg_px: number | null;
+  mark_px: number | null;
+  liq_px: number | null;
+  lever: number | null;
+  mgn_mode: string;
+  upl: number | null;
+  margin: number | null;
+  opened_at: string | null;
+}
+
+export interface OkxOrder {
+  inst: string;
+  side: 'buy' | 'sell';
+  pos_side: string;
+  ord_type: string;
+  px: number | null;
+  sz: number | null;
+  filled: number | null;
+  tp: number | null;
+  sl: number | null;
+  created_at: string | null;
+}
+
+export interface OkxAlgoOrder {
+  inst: string;
+  side: 'buy' | 'sell';
+  ord_type: string;
+  sz: number | null;
+  tp: number | null;
+  sl: number | null;
+  close_position: boolean;
+}
+
+export interface OkxClosedPosition {
+  inst: string;
+  direction: string;
+  open_px: number | null;
+  close_px: number | null;
+  size: number | null;
+  pnl: number | null;
+  fee: number | null;
+  close_type: string;
+  opened_at: string | null;
+  closed_at: string | null;
+}
+
+export type Account =
+  | { configured: false }
+  | {
+      configured: true;
+      updated_at: string;
+      total_eq: number | null;
+      currencies: Array<{ ccy: string; eq: number | null; avail: number | null }>;
+      positions: OkxPosition[];
+      orders: OkxOrder[];
+      algo_orders: OkxAlgoOrder[];
+      history: OkxClosedPosition[];
+    };
+
+export const accountApi = {
+  get: () => api.get<Account>('/account'),
+};
 
 export const authApi = {
   login: (email: string, password: string) =>

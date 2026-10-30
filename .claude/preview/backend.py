@@ -89,7 +89,33 @@ async def fake_ask_claude(system: str, user_text: str):
     }, {"model": "simulato", "input_tokens": 0, "output_tokens": 0}
 
 
+async def fake_okx_private_get(path: str, params=None) -> list:
+    """Conto OKX simulato: una posizione ETH aperta con stop, un ordine limit, una posizione chiusa"""
+    now = int(time.time() * 1000)
+    if path == "/api/v5/account/balance":
+        return [{"totalEq": "2034.52", "details": [{"ccy": "USDC", "eq": "2034.52", "availBal": "980.10"}]}]
+    if path == "/api/v5/account/positions":
+        last = float(fake_series("15m")[0][4])
+        return [{"instId": "ETH-USDC-SWAP", "pos": "9.09", "posSide": "net", "avgPx": "2332", "markPx": f"{last:.2f}",
+                 "liqPx": "1170.4", "lever": "2", "mgnMode": "isolated", "upl": f"{(last - 2332) * 0.909:.2f}",
+                 "margin": "1060", "cTime": str(now - 3600_000)}]
+    if path == "/api/v5/trade/orders-pending":
+        return [{"instId": "BTC-USDC-SWAP", "side": "buy", "posSide": "net", "ordType": "limit", "px": "68500",
+                 "sz": "0.3", "accFillSz": "0", "slTriggerPx": "67800", "tpTriggerPx": "70100", "cTime": str(now)}]
+    if path == "/api/v5/trade/orders-algo-pending":
+        return [{"instId": "ETH-USDC-SWAP", "side": "sell", "ordType": "oco", "sz": "9.09",
+                 "slTriggerPx": "2310", "tpTriggerPx": "2364"}]
+    if path == "/api/v5/account/positions-history":
+        return [
+            {"instId": "ETH-USDC-SWAP", "direction": "long", "openAvgPx": "2338", "closeAvgPx": "2316", "closeTotalPos": "9.09",
+             "realizedPnl": "-20.40", "fee": "-0.42", "type": "2", "cTime": str(now - 86400_000), "uTime": str(now - 80000_000)},
+        ]
+    return []
+
+
 server.okx_public = fake_okx_public
+server.okx_private_get = fake_okx_private_get
+server.OKX_API_KEY = server.OKX_API_SECRET = server.OKX_API_PASSPHRASE = "simulato"
 if not server.ANTHROPIC_API_KEY:
     server.ask_claude = fake_ask_claude
     server.ANTHROPIC_API_KEY = "simulato"  # abilita il pulsante "Ragiona ora" nell'interfaccia
