@@ -1,0 +1,23 @@
+[
+  {
+    "instrument": "ETH-USDC-SWAP",
+    "side": "long",
+    "setup": "retest_rottura",
+    "created_at": "2026-10-29T17:18:00+01:00",
+    "entry": 2338,
+    "stop": 2316,
+    "tp1": 2370,
+    "target": 2385,
+    "cancel_above": 2392,
+    "cancel_below": 2315,
+    "expiry": "2026-10-29T22:00:00+01:00",
+    "bias": "Rialzista: range 1h 2.290–2.390, resistenza testata tre volte; settimanale in correzione sana sul Fibonacci 38,2%.",
+    "status": "chiusa",
+    "filled_at": "2026-10-29T20:00:00+01:00",
+    "closed_at": "2026-10-29T23:00:00+01:00",
+    "outcome": "stop",
+    "exit": 2316,
+    "r": -1,
+    "note": "Ordine eseguito e chiuso allo stop. Correggi gli orari se su OKX sono diversi."
+  }
+]
