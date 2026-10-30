@@ -7,7 +7,7 @@ Il titolare non è uno sviluppatore: rispondi in **italiano**, spiega in modo se
 ## Principi da non violare
 
 - **Nessun ordine inviato a OKX.** OKX si usa solo in lettura: dati pubblici e conto con chiave API "Leggi" (`okx_private_get` fa solo GET firmati). L'esecuzione la fa il titolare nell'app OKX.
-- Il titolare usa **OKX Europa** (my.okx.com): API su `https://eea.okx.com` (`OKX_BASE_URL`). Codici strumento e chiavi API valgono solo su quel dominio.
+- Il titolare usa **OKX Europa** (my.okx.com): API su `https://eea.okx.com` (`OKX_BASE_URL`). Codici strumento e chiavi API valgono solo su quel dominio. Su OKX Europa i derivati sono **X-Perp**: tipo `FUTURES`, codici come `BZ-USD_UM_XPERP-310404` (Brent; il numero è una scadenza lontana), mostrati nell'interfaccia come «BZUSD X-Perp» (`instLabel`). Il tipo si ricava dal codice con `inst_type_of`.
 - Le **regole fisse** sono costanti in `backend/server.py` (`MAX_RISK_PCT`, `MAX_LEVERAGE`, `MIN_RR`, stop giornaliero) e vengono applicate dal server: impostazioni, creazione delle sessioni e "Ragiona ora" le rispettano. Non renderle modificabili dall'interfaccia.
 - Le stesse verifiche del piano esistono nel frontend (`src/lib/risk.ts`) solo per il riscontro immediato: tienile allineate a `plan_problems` del backend.
 - Testi dell'interfaccia in italiano; nessun consiglio finanziario presentato come certezza.

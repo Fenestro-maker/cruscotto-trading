@@ -12,6 +12,7 @@ import hmac
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -216,7 +217,7 @@ async def put_settings(data: SettingsIn, user: dict = Depends(get_current_user))
     results = await asyncio.gather(*(instrument_exists(i) for i in data.instruments))
     missing = [i for i, ok in zip(data.instruments, results) if not ok]
     if missing:
-        raise HTTPException(status_code=400, detail=f"Su OKX non esistono: {', '.join(missing)}. Controlla i codici (es. ETH-USDT-SWAP).")
+        raise HTTPException(status_code=400, detail=f"Su OKX non esistono: {', '.join(missing)}. Controlla i codici (su OKX Europa gli X-Perp sono del tipo BTC-USD_UM_XPERP-310404).")
     await db.settings.update_one({"_id": "main"}, {"$set": data.model_dump()}, upsert=True)
     return await get_settings(user)
 
@@ -259,6 +260,15 @@ async def okx_public(path: str, params: dict) -> list:
     if body.get("code") != "0":
         raise HTTPException(status_code=502, detail=f"OKX: {body.get('msg') or 'errore'} (codice {body.get('code')})")
     return body.get("data", [])
+
+
+def inst_type_of(inst: str) -> str:
+    """Tipo OKX dal codice: perpetual classici (-SWAP), futures e X-Perp di OKX Europa (scadenza -AAMMGG), spot"""
+    if inst.endswith("-SWAP"):
+        return "SWAP"
+    if re.search(r"-\d{6}$", inst):
+        return "FUTURES"
+    return "SPOT"
 
 
 async def fetch_candles(inst: str, tf: str, limit: int) -> list[dict]:
@@ -305,7 +315,7 @@ async def market_candles(inst: str, tf: str = "1H", limit: int = 300, user: dict
 @api.get("/market/instrument")
 async def market_instrument(inst: str, user: dict = Depends(get_current_user)):
     """Dati del contratto: servono per tradurre la quantità in contratti OKX"""
-    inst_type = "SWAP" if inst.endswith("-SWAP") else "SPOT"
+    inst_type = inst_type_of(inst)
     data = await okx_public("/api/v5/public/instruments", {"instType": inst_type, "instId": inst})
     if not data:
         raise HTTPException(status_code=404, detail=f"Strumento non trovato su OKX: {inst}")
@@ -320,7 +330,7 @@ async def market_instrument(inst: str, user: dict = Depends(get_current_user)):
 
 
 async def instrument_exists(inst: str) -> bool:
-    inst_type = "SWAP" if inst.endswith("-SWAP") else "SPOT"
+    inst_type = inst_type_of(inst)
     try:
         return bool(await okx_public("/api/v5/public/instruments", {"instType": inst_type, "instId": inst}))
     except HTTPException as e:
@@ -391,10 +401,10 @@ async def account(user: dict = Depends(get_current_user)):
         return {"configured": False}
     balance, positions, orders, algos, history = await asyncio.gather(
         okx_private_get("/api/v5/account/balance"),
-        okx_private_get("/api/v5/account/positions", {"instType": "SWAP"}),
-        okx_private_get("/api/v5/trade/orders-pending", {"instType": "SWAP"}),
-        okx_private_get("/api/v5/trade/orders-algo-pending", {"ordType": "conditional,oco", "instType": "SWAP"}),
-        okx_private_get("/api/v5/account/positions-history", {"instType": "SWAP", "limit": "20"}),
+        okx_private_get("/api/v5/account/positions"),
+        okx_private_get("/api/v5/trade/orders-pending"),
+        okx_private_get("/api/v5/trade/orders-algo-pending", {"ordType": "conditional,oco"}),
+        okx_private_get("/api/v5/account/positions-history", {"limit": "20"}),
     )
     bal = balance[0] if balance else {}
     return {
@@ -527,6 +537,7 @@ Indicazioni sulla risposta:
 - cancel_above / cancel_below: soglie oltre le quali l'ordine limit va annullato se non ancora eseguito (es. chiusura 1h oltre la resistenza per un long che aspetta il retest, oppure prezzo sotto lo stop prima del riempimento).
 - expiry_hours: entro quante ore annullare l'ordine se non viene eseguito (di solito fino a fine sessione).
 - Se decision è no_trade, metti side "none", setup "nessuno" e i livelli a null; spiega cosa aspetteresti per entrare.
+- Oro, petrolio, indici e valute hanno orari di mercato: chiusure nel weekend e pause creano buchi nelle candele. Tienine conto e segnala nei rischi gli eventi tipici (Fed/BCE, inflazione USA, scorte di petrolio del mercoledì, OPEC, dati sul lavoro USA).
 - Usa solo i dati forniti; se mancano informazioni importanti dillo nei rischi.
 """
 

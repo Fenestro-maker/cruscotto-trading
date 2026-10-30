@@ -14,7 +14,7 @@ export default function RiskPanel({ plan, settings, daily, info }: {
     : null;
   const checks = ruleChecks(settings.rules, settings.risk_pct, settings.leverage, sizing?.rr ?? null, daily);
   const contracts = sizing ? toContracts(sizing.quantity, info) : null;
-  const base = plan?.instrument.split('-')[0] ?? '';
+  const base = info?.ct_val_ccy || (plan?.instrument.split('-')[0] ?? '');
 
   const copy = async () => {
     if (!plan || !sizing) return;
