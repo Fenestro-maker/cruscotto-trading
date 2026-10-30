@@ -539,6 +539,12 @@ Indicazioni sulla risposta:
 - Se decision è no_trade, metti side "none", setup "nessuno" e i livelli a null; spiega cosa aspetteresti per entrare.
 - Oro, petrolio, indici e valute hanno orari di mercato: chiusure nel weekend e pause creano buchi nelle candele. Tienine conto e segnala nei rischi gli eventi tipici (Fed/BCE, inflazione USA, scorte di petrolio del mercoledì, OPEC, dati sul lavoro USA).
 - Usa solo i dati forniti; se mancano informazioni importanti dillo nei rischi.
+
+Voto di fattibilità (score, intero da 1 a 10): quanta convinzione c'è di poter fare il trade secondo il metodo.
+- Conta le conferme INDIPENDENTI che convergono sulla stessa tesi: direzione del settimanale, bias del giornaliero, struttura 4h/1h, livello chiave (supporto/resistenza, Fibonacci, livello rotto e ritestato), conferma sul 15m, momentum (RSI, divergenze) e volumi, stop in un punto logico con R:R ampio.
+- Più conferme allineate alzano il voto; timeframe in disaccordo, segnali contrari, livelli vicini che limitano il target, prezzo lontano dalla zona o eventi a rischio lo abbassano.
+- Scala: 1–3 nessun vantaggio, 4–5 debole, 6–7 discreto, 8–9 forte, 10 eccezionale e raro. Non gonfiare il voto: con decision no_trade il voto è di regola 4 o meno.
+- score_for: le conferme, una per voce, brevi e con i prezzi. score_against: i punti contrari, stesso formato.
 """
 
 NUM_OR_NULL = {"anyOf": [{"type": "number"}, {"type": "null"}]}
@@ -578,12 +584,14 @@ ANALYSIS_SCHEMA = {
         "invalidation": {"type": "string"},
         "bias": {"type": "string"},
         "risks": {"type": "array", "items": {"type": "string"}},
-        "confidence": {"type": "string", "enum": ["bassa", "media", "alta"]},
+        "score": {"type": "integer"},
+        "score_for": {"type": "array", "items": {"type": "string"}},
+        "score_against": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
         "decision", "summary", "weekly", "daily", "structure", "timing", "key_levels", "setup", "side",
         "entry", "stop", "tp1", "target", "cancel_above", "cancel_below", "expiry_hours",
-        "cancel_conditions", "invalidation", "bias", "risks", "confidence",
+        "cancel_conditions", "invalidation", "bias", "risks", "score", "score_for", "score_against",
     ],
     "additionalProperties": False,
 }
@@ -668,6 +676,7 @@ async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user))
     parts.append("Fai l'analisi top-down e proponi il piano della sessione (o nessun trade).")
     result, usage = await ask_claude(ANALYSIS_SYSTEM, "\n\n".join(parts))
 
+    result["score"] = max(1, min(10, int(result["score"])))
     plan_issues: list[str] = []
     if result["decision"] == "trade":
         plan_issues = plan_problems(result["side"], result["entry"], result["stop"], result["tp1"], result["target"])
@@ -811,6 +820,7 @@ async def create_session(data: SessionIn, user: dict = Depends(get_current_user)
     if data.side != "none" and await db.sessions.find_one({"status": {"$in": ["attesa", "aperta"]}}):
         raise HTTPException(status_code=409, detail="C'è già una sessione in corso: chiudila o annullala prima")
     fields = session_fields(data, await load_settings())
+    fields["score"] = await analysis_score(data.analysis_id)
     last = await db.sessions.find_one(sort=[("n", -1)])
     doc = {
         **fields,
@@ -823,6 +833,14 @@ async def create_session(data: SessionIn, user: dict = Depends(get_current_user)
     res = await db.sessions.insert_one(doc)
     doc["_id"] = res.inserted_id
     return session_out(doc)
+
+
+async def analysis_score(analysis_id: Optional[str]) -> Optional[int]:
+    """Voto di fattibilità dell'analisi da cui nasce il piano (resta nel diario per confrontarlo con l'esito)"""
+    if not analysis_id or not ObjectId.is_valid(analysis_id):
+        return None
+    doc = await db.analyses.find_one({"_id": ObjectId(analysis_id)}, {"result.score": 1})
+    return (doc or {}).get("result", {}).get("score")
 
 
 async def find_session(session_id: str) -> dict:
@@ -838,6 +856,7 @@ async def update_session(session_id: str, data: SessionIn, user: dict = Depends(
     if doc["status"] != "attesa":
         raise HTTPException(status_code=409, detail="Si può modificare solo un piano in attesa di esecuzione")
     fields = session_fields(data, await load_settings())
+    fields["score"] = await analysis_score(data.analysis_id)
     fields["updated_at"] = now_utc()
     await db.sessions.update_one({"_id": doc["_id"]}, {"$set": fields})
     return session_out(await find_session(session_id))
@@ -962,18 +981,25 @@ async def stats(user: dict = Depends(get_current_user)):
             "avg_r": round(total_r / len(closed), 2) if closed else None,
         }
 
-    def grouped(key: str) -> list[dict]:
+    def grouped(key) -> list[dict]:
         groups: dict[str, list] = {}
         for d in docs:
-            groups.setdefault(d.get(key) or "-", []).append(d)
+            groups.setdefault((key(d) if callable(key) else d.get(key)) or "-", []).append(d)
         return sorted(({"key": k, **summarize(v)} for k, v in groups.items()), key=lambda g: -g["sessions"])
 
-    return {"overall": summarize(docs), "by_instrument": grouped("instrument"), "by_setup": grouped("setup")}
+    def score_band(d: dict) -> Optional[str]:
+        score = d.get("score")
+        if score is None:
+            return None
+        return "8-10" if score >= 8 else "6-7" if score >= 6 else "1-5"
+
+    by_score = sorted(grouped(score_band), key=lambda g: g["key"], reverse=True)
+    return {"overall": summarize(docs), "by_instrument": grouped("instrument"), "by_setup": grouped("setup"), "by_score": by_score}
 
 
 EXPORT_FIELDS = [
     "n", "created_at", "instrument", "side", "setup", "status", "entry", "stop", "tp1", "target",
-    "cancel_above", "cancel_below", "expiry", "filled_at", "closed_at", "outcome", "exit", "r", "rr", "bias", "note",
+    "cancel_above", "cancel_below", "expiry", "filled_at", "closed_at", "outcome", "exit", "r", "rr", "score", "bias", "note",
 ]
 
 
@@ -1012,6 +1038,7 @@ class ImportedSession(BaseModel):
     outcome: Optional[str] = None
     exit: Optional[float] = None
     r: Optional[float] = None
+    score: Optional[int] = None
     bias: str = ""
     note: str = ""
 

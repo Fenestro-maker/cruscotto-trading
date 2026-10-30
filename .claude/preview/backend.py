@@ -85,7 +85,10 @@ async def fake_ask_claude(system: str, user_text: str):
         "invalidation": f"Chiusura 1h sotto {entry - 22:.0f}.",
         "bias": "Rialzista sopra la resistenza rotta.",
         "risks": ["Dati di prova generati a caso"],
-        "confidence": "media",
+        "score": 7,
+        "score_for": [f"Settimanale in trend rialzista sopra {entry - 60:.0f}", f"Retest della resistenza rotta a {entry:.0f}",
+                      "RSI 1h in ripresa da 45", f"Stop logico sotto la zona, R:R {47 / 22:.1f}:1"],
+        "score_against": [f"Resistenza a {entry + 55:.0f} vicina al target", "Volumi in calo sulla rottura"],
     }, {"model": "simulato", "input_tokens": 0, "output_tokens": 0}
 
 
