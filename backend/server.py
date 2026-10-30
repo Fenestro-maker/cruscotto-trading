@@ -243,7 +243,9 @@ _okx_http: Optional[httpx.AsyncClient] = None
 def okx_http() -> httpx.AsyncClient:
     global _okx_http
     if _okx_http is None:
-        _okx_http = httpx.AsyncClient(base_url=OKX_BASE_URL, timeout=15)
+        # Sempre IPv4: la chiave API OKX è limitata all'indirizzo IPv4 della VPS
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=1)
+        _okx_http = httpx.AsyncClient(base_url=OKX_BASE_URL, timeout=15, transport=transport)
     return _okx_http
 
 
@@ -379,6 +381,8 @@ async def okx_private_get(path: str, params: Optional[dict] = None) -> list:
             "50105": "passphrase sbagliata",
         }
         hint = hints.get(code, body.get("msg") or "errore")
+        if code == "50110" and body.get("msg"):
+            hint += f" · messaggio di OKX: {body['msg']}"  # contiene l'IP visto da OKX
         raise HTTPException(status_code=502, detail=f"OKX (conto): {hint} (codice {code})")
     return body.get("data", [])
 
