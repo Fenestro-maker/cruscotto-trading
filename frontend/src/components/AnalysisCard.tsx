@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Brain, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import type { Analysis } from '@/api/client';
 import { SETUP_LABELS } from '@/api/client';
-import { cn, fmtDateTime, fmtPrice } from '@/lib/format';
+import { cn, fmtDateTime, fmtPrice, instLabel } from '@/lib/format';
 import { Alert, Button, Card, Textarea } from './ui';
 
 export function ReasonPanel({ disabled, disabledReason, busy, onRun }: {
@@ -57,7 +57,7 @@ export default function AnalysisCard({ analysis, onUsePlan, onNoTrade }: {
   const valid = isTrade && analysis.plan_issues.length === 0;
   return (
     <Card
-      title={`Analisi · ${analysis.instrument}`}
+      title={`Analisi · ${instLabel(analysis.instrument)}`}
       actions={<span className="text-xs text-slate-500">{fmtDateTime(analysis.created_at)}</span>}
     >
       <div className="space-y-4">

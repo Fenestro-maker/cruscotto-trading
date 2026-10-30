@@ -63,7 +63,7 @@ export default function SettingsPage() {
           <Field label="Leva" hint={`Da 1 a ${r.max_leverage}x, margine isolato. Decide solo il margine, non il rischio`}>
             <Input inputMode="decimal" className="num" value={leverage} onChange={(e) => setLeverage(e.target.value)} />
           </Field>
-          <Field label="Strumenti OKX (uno per riga)" hint="Codici OKX, es. ETH-USDC-SWAP, BTC-USDT-SWAP">
+          <Field label="Strumenti OKX (uno per riga)" hint="Codici API di OKX. Su OKX Europa gli X-Perp sono del tipo ETH-USD_UM_XPERP-310404">
             <Textarea rows={4} className="num" value={instruments} onChange={(e) => setInstruments(e.target.value)} />
           </Field>
           {error && <Alert tone="error">{error}</Alert>}

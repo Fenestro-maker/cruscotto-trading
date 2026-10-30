@@ -54,3 +54,9 @@ export function downloadBlob(blob: Blob, filename: string) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/** Nome leggibile dello strumento: gli X-Perp di OKX Europa come nell'app (BZ-USD_UM_XPERP-310404 → BZUSD X-Perp) */
+export function instLabel(inst: string): string {
+  const m = inst.match(/^([A-Z0-9]+)-([A-Z]+)_[A-Z]+_XPERP-\d{6}$/);
+  return m ? `${m[1]}${m[2]} X-Perp` : inst;
+}

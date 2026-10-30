@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { accountApi, errorMessage } from '@/api/client';
 import type { Account, OkxPosition, Session } from '@/api/client';
-import { cn, fmtDateTime, fmtNum, fmtPrice, fmtUsd } from '@/lib/format';
+import { cn, fmtDateTime, fmtNum, fmtPrice, fmtUsd, instLabel } from '@/lib/format';
 import { Alert, Card } from './ui';
 
 const REFRESH_MS = 30_000;
@@ -74,10 +74,10 @@ export default function AccountPanel({ inst, session }: { inst: string; session:
           </div>
 
           {session?.status === 'attesa' && session.instrument === inst && position && (
-            <Alert tone="info">Su OKX c'è una posizione aperta su {inst}: se è questo piano, premi «Ordine eseguito».</Alert>
+            <Alert tone="info">Su OKX c'è una posizione aperta su {instLabel(inst)}: se è questo piano, premi «Ordine eseguito».</Alert>
           )}
           {session?.status === 'aperta' && session.instrument === inst && !position && (
-            <Alert tone="info">Su OKX non risulta più una posizione aperta su {inst}: controlla le posizioni chiuse qui sotto e registra l'esito.</Alert>
+            <Alert tone="info">Su OKX non risulta più una posizione aperta su {instLabel(inst)}: controlla le posizioni chiuse qui sotto e registra l'esito.</Alert>
           )}
 
           <section>
@@ -92,7 +92,7 @@ export default function AccountPanel({ inst, session }: { inst: string; session:
                       <span className={cn('rounded px-1.5 text-xs font-semibold', dir === 'long' ? 'bg-emerald-900 text-emerald-200' : 'bg-rose-900 text-rose-200')}>
                         {dir.toUpperCase()}
                       </span>
-                      <span className="text-slate-100">{p.inst}</span>
+                      <span className="text-slate-100">{instLabel(p.inst)}</span>
                       <span className="num text-xs text-slate-400">{fmtNum(Math.abs(p.pos), 2)} contratti · {p.lever}x {p.mgn_mode === 'isolated' ? 'isolato' : 'cross'}</span>
                       <span className={cn('num ml-auto', (p.upl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400')}>{fmtUsd(p.upl)}</span>
                     </div>
@@ -113,7 +113,7 @@ export default function AccountPanel({ inst, session }: { inst: string; session:
             <ul className="space-y-1 text-sm">
               {account.orders.map((o, i) => (
                 <li key={`o${i}`} className="num text-xs text-slate-300">
-                  {o.inst} · {o.side === 'buy' ? 'compra' : 'vendi'} {o.ord_type} {fmtPrice(o.px)} × {fmtNum(o.sz, 2)}
+                  {instLabel(o.inst)} · {o.side === 'buy' ? 'compra' : 'vendi'} {o.ord_type} {fmtPrice(o.px)} × {fmtNum(o.sz, 2)}
                   {o.sl != null && <span className="text-rose-300"> · stop {fmtPrice(o.sl)}</span>}
                   {o.tp != null && <span className="text-emerald-300"> · TP {fmtPrice(o.tp)}</span>}
                   {o.sl == null && <span className="font-medium text-rose-300"> · senza stop</span>}
@@ -121,7 +121,7 @@ export default function AccountPanel({ inst, session }: { inst: string; session:
               ))}
               {account.algo_orders.map((a, i) => (
                 <li key={`a${i}`} className="num text-xs text-slate-300">
-                  {a.inst} · {a.ord_type === 'oco' ? 'stop + TP' : 'condizionale'} {a.side === 'buy' ? 'compra' : 'vendi'} {a.close_position ? 'tutta la posizione' : fmtNum(a.sz, 2)}
+                  {instLabel(a.inst)} · {a.ord_type === 'oco' ? 'stop + TP' : 'condizionale'} {a.side === 'buy' ? 'compra' : 'vendi'} {a.close_position ? 'tutta la posizione' : fmtNum(a.sz, 2)}
                   {a.sl != null && <span className="text-rose-300"> · stop {fmtPrice(a.sl)}</span>}
                   {a.tp != null && <span className="text-emerald-300"> · TP {fmtPrice(a.tp)}</span>}
                 </li>
@@ -137,7 +137,7 @@ export default function AccountPanel({ inst, session }: { inst: string; session:
                 <li key={i} className="flex items-center gap-2 text-xs">
                   <span className="num w-28 shrink-0 text-slate-500">{fmtDateTime(h.closed_at)}</span>
                   <span className="flex-1 text-slate-300">
-                    {h.inst} {h.direction} · {fmtPrice(h.open_px)} → {fmtPrice(h.close_px)}{CLOSE_TYPES[h.close_type] && ` · ${CLOSE_TYPES[h.close_type]}`}
+                    {instLabel(h.inst)} {h.direction} · {fmtPrice(h.open_px)} → {fmtPrice(h.close_px)}{CLOSE_TYPES[h.close_type] && ` · ${CLOSE_TYPES[h.close_type]}`}
                   </span>
                   <span className={cn('num', (h.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400')}>{fmtUsd(h.pnl)}</span>
                 </li>

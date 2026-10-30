@@ -12,7 +12,7 @@ import AccountPanel from '@/components/AccountPanel';
 import ActiveSession from '@/components/ActiveSession';
 import { Alert, Button, Card, Select } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
-import { cn, fmtPct, fmtPrice } from '@/lib/format';
+import { cn, fmtPct, fmtPrice, instLabel } from '@/lib/format';
 
 const PRICE_REFRESH_MS = 5000;
 
@@ -148,14 +148,14 @@ export default function SessionPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="w-48">
+        <div className="w-56">
           <Select
             aria-label="Strumento"
             value={shownInst}
             disabled={!!active}
             onChange={(e) => { setInst(e.target.value); setForm(null); }}
           >
-            {settings.instruments.map((i) => <option key={i} value={i}>{i}</option>)}
+            {settings.instruments.map((i) => <option key={i} value={i}>{instLabel(i)}</option>)}
           </Select>
         </div>
         <div className="flex items-baseline gap-2">

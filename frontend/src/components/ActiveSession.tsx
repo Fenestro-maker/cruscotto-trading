@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Outcome, Session } from '@/api/client';
 import { SETUP_LABELS } from '@/api/client';
-import { cn, fmtDateTime, fmtPct, fmtPrice } from '@/lib/format';
+import { cn, fmtDateTime, fmtPct, fmtPrice, instLabel } from '@/lib/format';
 import { Alert, Button, Card, Field, Input, Stat } from './ui';
 
 const STEPS = [
@@ -60,7 +60,7 @@ export default function ActiveSession({ session, price, busy, onFill, onCancel, 
 
   return (
     <Card
-      title={`Sessione ${session.n} · ${session.instrument}`}
+      title={`Sessione ${session.n} · ${instLabel(session.instrument)}`}
       actions={<span className="text-xs text-slate-500">dal {fmtDateTime(session.created_at)}</span>}
     >
       <div className="space-y-4">

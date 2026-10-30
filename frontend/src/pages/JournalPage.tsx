@@ -3,7 +3,7 @@ import { ChevronDown, Download, Trash2, Upload } from 'lucide-react';
 import { errorMessage, SETUP_LABELS, sessionsApi } from '@/api/client';
 import type { SessionStatus, Session, SetupKey, Stats, StatsGroup } from '@/api/client';
 import { Alert, Button, Card, Stat, Textarea } from '@/components/ui';
-import { cn, downloadBlob, fmtDateTime, fmtNum, fmtPrice, fmtR } from '@/lib/format';
+import { cn, downloadBlob, fmtDateTime, fmtNum, fmtPrice, fmtR, instLabel } from '@/lib/format';
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
   attesa: 'In attesa', aperta: 'Aperta', chiusa: 'Chiusa', annullata: 'Annullata', notrade: 'Nessun trade',
@@ -49,7 +49,7 @@ function SessionRow({ s, onSaveNote, onDelete }: { s: Session; onSaveNote: (note
         <span className="num w-8 text-slate-500">#{s.n}</span>
         <span className="flex-1">
           <span className="block text-slate-100">
-            {s.instrument} · {s.side === 'none' ? 'Nessun trade' : `${s.side.toUpperCase()} · ${SETUP_LABELS[s.setup as SetupKey] ?? s.setup}`}
+            {instLabel(s.instrument)} · {s.side === 'none' ? 'Nessun trade' : `${s.side.toUpperCase()} · ${SETUP_LABELS[s.setup as SetupKey] ?? s.setup}`}
           </span>
           <span className="block text-xs text-slate-500">{fmtDateTime(s.created_at)} · {STATUS_LABELS[s.status]}{s.outcome ? ` · ${OUTCOME_LABELS[s.outcome]}` : ''}</span>
         </span>
@@ -156,7 +156,7 @@ export default function JournalPage() {
 
       {stats && (
         <div className="grid gap-4 md:grid-cols-2">
-          <GroupTable title="Per strumento" rows={stats.by_instrument} label={(k) => k} />
+          <GroupTable title="Per strumento" rows={stats.by_instrument} label={instLabel} />
           <GroupTable title="Per setup" rows={stats.by_setup} label={(k) => SETUP_LABELS[k as SetupKey] ?? k} />
         </div>
       )}
