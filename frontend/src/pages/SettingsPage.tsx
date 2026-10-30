@@ -89,6 +89,13 @@ export default function SettingsPage() {
             ? <p className="text-sm text-slate-300">Attiva · modello <span className="num">{settings.ai_model}</span></p>
             : <Alert tone="warn">Non attiva: manca ANTHROPIC_API_KEY nel file backend/.env del server.</Alert>}
         </Card>
+        <Card title="OKX">
+          <p className="text-sm text-slate-300">Dati di mercato da <span className="num">{settings.okx_base_url}</span></p>
+          <p className="mt-1 text-sm text-slate-300">
+            Conto: {settings.okx_account ? 'collegato in sola lettura' : 'non collegato (manca la chiave API in backend/.env)'}
+          </p>
+          <p className="mt-3 text-xs text-slate-500">Nessun ordine viene inviato a OKX da questa piattaforma.</p>
+        </Card>
       </div>
     </div>
   );

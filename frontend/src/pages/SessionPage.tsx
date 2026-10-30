@@ -8,6 +8,7 @@ import PlanForm from '@/components/PlanForm';
 import { EMPTY_FORM, formFromAnalysis, formFromPlan, planFromForm } from '@/lib/planForm';
 import type { PlanFormState } from '@/lib/planForm';
 import RiskPanel from '@/components/RiskPanel';
+import AccountPanel from '@/components/AccountPanel';
 import ActiveSession from '@/components/ActiveSession';
 import { Alert, Button, Card, Select } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
@@ -221,6 +222,7 @@ export default function SessionPage() {
             />
           )}
           <RiskPanel plan={draft ?? active} settings={settings} daily={daily} info={info} />
+          <AccountPanel inst={shownInst} session={active} />
         </div>
       </div>
     </div>

@@ -6,15 +6,16 @@ Il titolare non è uno sviluppatore: rispondi in **italiano**, spiega in modo se
 
 ## Principi da non violare
 
-- **Nessun ordine inviato a OKX.** OKX si usa solo in lettura (dati pubblici; in futuro conto in sola lettura con chiave API "Read"). L'esecuzione la fa il titolare nell'app OKX.
+- **Nessun ordine inviato a OKX.** OKX si usa solo in lettura: dati pubblici e conto con chiave API "Leggi" (`okx_private_get` fa solo GET firmati). L'esecuzione la fa il titolare nell'app OKX.
+- Il titolare usa **OKX Europa** (my.okx.com): API su `https://eea.okx.com` (`OKX_BASE_URL`). Codici strumento e chiavi API valgono solo su quel dominio.
 - Le **regole fisse** sono costanti in `backend/server.py` (`MAX_RISK_PCT`, `MAX_LEVERAGE`, `MIN_RR`, stop giornaliero) e vengono applicate dal server: impostazioni, creazione delle sessioni e "Ragiona ora" le rispettano. Non renderle modificabili dall'interfaccia.
 - Le stesse verifiche del piano esistono nel frontend (`src/lib/risk.ts`) solo per il riscontro immediato: tienile allineate a `plan_problems` del backend.
 - Testi dell'interfaccia in italiano; nessun consiglio finanziario presentato come certezza.
 
 ## Struttura
 
-- `backend/server.py`: tutto il backend FastAPI (Mongo via motor). Rotte `/api/...`: login (JWT, nessuna registrazione: utenti con `backend/create_user.py`), impostazioni, dati di mercato OKX (`/market/ticker|candles|instrument`), analisi con Claude (`POST /analysis`, risposta JSON validata da `ANALYSIS_SCHEMA`), sessioni (piano → eseguito → chiuso/annullato, R calcolati dal server), statistiche, esportazione CSV/JSON e importazione JSON.
-- Variabili in `backend/.env` (non nel repository, modello in `backend/.env.example`): `MONGO_URL`, `DB_NAME`, `SECRET_KEY`, `PORT`, `ANTHROPIC_API_KEY`, `AI_MODEL`, `AI_EFFORT`.
+- `backend/server.py`: tutto il backend FastAPI (Mongo via motor). Rotte `/api/...`: login (JWT, nessuna registrazione: utenti con `backend/create_user.py`), impostazioni, dati di mercato OKX (`/market/ticker|candles|instrument`), analisi con Claude (`POST /analysis`, risposta JSON validata da `ANALYSIS_SCHEMA`), sessioni (piano → eseguito → chiuso/annullato, R calcolati dal server), statistiche, esportazione CSV/JSON e importazione JSON, conto OKX in sola lettura (`GET /account`: saldo, posizioni, ordini in attesa, stop/TP, posizioni chiuse). Le impostazioni rifiutano codici strumento che non esistono su OKX.
+- Variabili in `backend/.env` (non nel repository, modello in `backend/.env.example`): `MONGO_URL`, `DB_NAME`, `SECRET_KEY`, `PORT`, `ANTHROPIC_API_KEY`, `AI_MODEL`, `AI_EFFORT`, `OKX_BASE_URL`, `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`.
 - `frontend/`: React 19 + Vite + TypeScript + Tailwind, tema scuro. Pagine in `src/pages/` (Sessione, Diario, Impostazioni, Login), componenti in `src/components/`, calcoli in `src/lib/` (`risk.ts` dimensionamento e regole, `planForm.ts` modulo del piano, `format.ts` formati italiani). Grafico: `lightweight-charts` v5 con orari in ora italiana. Alias `@` → `src/`.
 - `deploy/`: servizio systemd e configurazione Nginx per la VPS.
 - `docs/sessione-1-*.json`: la Sessione 1 del 29/10/2026 in due varianti (ordine annullato / eseguito e stop), da importare dal Diario.
@@ -31,7 +32,7 @@ Le dipendenze le installa `.claude/hooks/session-start.sh`. Se cambi le dipenden
 
 ## Preview (screenshot per il titolare)
 
-Da questo ambiente cloud `www.okx.com` di norma non è raggiungibile e MongoDB non c'è: il backend di preview usa `mongomock-motor`, **candele OKX finte** e, senza `ANTHROPIC_API_KEY`, un **piano di prova fisso** (marcato "[PIANO DI PROVA…]"). Non presentare mai questi dati come reali.
+Da questo ambiente cloud `www.okx.com` di norma non è raggiungibile e MongoDB non c'è: il backend di preview usa `mongomock-motor`, **candele e conto OKX finti** e, senza `ANTHROPIC_API_KEY`, un **piano di prova fisso** (marcato "[PIANO DI PROVA…]"). Non presentare mai questi dati come reali.
 
 ```bash
 backend/venv/bin/python .claude/preview/backend.py &     # 127.0.0.1:8003, utente demo@trading.local / demo12345

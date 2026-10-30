@@ -5,7 +5,10 @@ piano della sessione con le regole fisse di rischio, diario delle sessioni.
 Nessun ordine viene inviato a OKX.
 """
 import asyncio
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -13,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -38,7 +42,11 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5-5")
 AI_EFFORT = os.environ.get("AI_EFFORT", "high")
-OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")  # OKX Europa (my.okx.com): https://eea.okx.com
+# Chiave API OKX con il solo permesso "Leggi": serve a mostrare conto, posizioni e ordini
+OKX_API_KEY = os.environ.get("OKX_API_KEY", "")
+OKX_API_SECRET = os.environ.get("OKX_API_SECRET", "")
+OKX_API_PASSPHRASE = os.environ.get("OKX_API_PASSPHRASE", "")
 
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY mancante in backend/.env")
@@ -168,7 +176,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api.get("/health")
 async def health():
-    return {"ok": True, "ai_configured": bool(ANTHROPIC_API_KEY)}
+    return {"ok": True, "ai_configured": bool(ANTHROPIC_API_KEY), "okx_account": okx_account_configured()}
 
 
 # ---------- Impostazioni ----------
@@ -199,11 +207,16 @@ async def load_settings() -> dict:
 
 @api.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
-    return {**await load_settings(), "rules": rules_info(), "ai_configured": bool(ANTHROPIC_API_KEY), "ai_model": AI_MODEL}
+    return {**await load_settings(), "rules": rules_info(), "ai_configured": bool(ANTHROPIC_API_KEY), "ai_model": AI_MODEL,
+            "okx_base_url": OKX_BASE_URL, "okx_account": okx_account_configured()}
 
 
 @api.put("/settings")
 async def put_settings(data: SettingsIn, user: dict = Depends(get_current_user)):
+    results = await asyncio.gather(*(instrument_exists(i) for i in data.instruments))
+    missing = [i for i, ok in zip(data.instruments, results) if not ok]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Su OKX non esistono: {', '.join(missing)}. Controlla i codici (es. ETH-USDT-SWAP).")
     await db.settings.update_one({"_id": "main"}, {"$set": data.model_dump()}, upsert=True)
     return await get_settings(user)
 
@@ -303,6 +316,131 @@ async def market_instrument(inst: str, user: dict = Depends(get_current_user)):
         "ct_val": num("ctVal"), "ct_val_ccy": d.get("ctValCcy") or d.get("baseCcy"),
         "lot_sz": num("lotSz"), "min_sz": num("minSz"), "tick_sz": num("tickSz"),
         "settle_ccy": d.get("settleCcy") or d.get("quoteCcy"),
+    }
+
+
+async def instrument_exists(inst: str) -> bool:
+    inst_type = "SWAP" if inst.endswith("-SWAP") else "SPOT"
+    try:
+        return bool(await okx_public("/api/v5/public/instruments", {"instType": inst_type, "instId": inst}))
+    except HTTPException as e:
+        if "51001" in str(e.detail):  # strumento inesistente
+            return False
+        raise
+
+
+# ---------- OKX: conto in sola lettura ----------
+
+def okx_account_configured() -> bool:
+    return bool(OKX_API_KEY and OKX_API_SECRET and OKX_API_PASSPHRASE)
+
+
+async def okx_private_get(path: str, params: Optional[dict] = None) -> list:
+    """GET firmato su OKX. Solo lettura: questo backend non fa mai richieste POST a OKX."""
+    if not okx_account_configured():
+        raise HTTPException(status_code=503, detail="Chiave API OKX non configurata in backend/.env")
+    query = urlencode({k: v for k, v in (params or {}).items() if v is not None}, safe=",")
+    request_path = path + (f"?{query}" if query else "")
+    now = now_utc()
+    timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    signature = base64.b64encode(
+        hmac.new(OKX_API_SECRET.encode(), f"{timestamp}GET{request_path}".encode(), hashlib.sha256).digest()
+    ).decode()
+    headers = {
+        "OK-ACCESS-KEY": OKX_API_KEY,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": OKX_API_PASSPHRASE,
+    }
+    try:
+        r = await okx_http().get(request_path, headers=headers)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="OKX non raggiungibile: riprova tra poco")
+    try:
+        body = r.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail=f"Risposta di OKX non leggibile (HTTP {r.status_code})")
+    code = body.get("code")
+    if code != "0":
+        hints = {
+            "50110": "l'IP della VPS non è tra gli IP attendibili della chiave",
+            "50111": "chiave API non valida",
+            "50113": "firma non valida: controlla la Secret key",
+            "50105": "passphrase sbagliata",
+        }
+        hint = hints.get(code, body.get("msg") or "errore")
+        raise HTTPException(status_code=502, detail=f"OKX (conto): {hint} (codice {code})")
+    return body.get("data", [])
+
+
+def fnum(value) -> Optional[float]:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def ms_iso(value) -> Optional[str]:
+    return iso(datetime.fromtimestamp(int(value) / 1000, timezone.utc)) if value else None
+
+
+@api.get("/account")
+async def account(user: dict = Depends(get_current_user)):
+    """Conto OKX in sola lettura: saldo, posizioni, ordini in attesa, stop/TP, ultime posizioni chiuse"""
+    if not okx_account_configured():
+        return {"configured": False}
+    balance, positions, orders, algos, history = await asyncio.gather(
+        okx_private_get("/api/v5/account/balance"),
+        okx_private_get("/api/v5/account/positions", {"instType": "SWAP"}),
+        okx_private_get("/api/v5/trade/orders-pending", {"instType": "SWAP"}),
+        okx_private_get("/api/v5/trade/orders-algo-pending", {"ordType": "conditional,oco", "instType": "SWAP"}),
+        okx_private_get("/api/v5/account/positions-history", {"instType": "SWAP", "limit": "20"}),
+    )
+    bal = balance[0] if balance else {}
+    return {
+        "configured": True,
+        "updated_at": iso(now_utc()),
+        "total_eq": fnum(bal.get("totalEq")),
+        "currencies": [
+            {"ccy": d["ccy"], "eq": fnum(d.get("eq")), "avail": fnum(d.get("availBal"))}
+            for d in bal.get("details", []) if (fnum(d.get("eq")) or 0) > 0
+        ],
+        "positions": [
+            {
+                "inst": p["instId"], "pos": fnum(p.get("pos")), "pos_side": p.get("posSide"),
+                "avg_px": fnum(p.get("avgPx")), "mark_px": fnum(p.get("markPx")), "liq_px": fnum(p.get("liqPx")),
+                "lever": fnum(p.get("lever")), "mgn_mode": p.get("mgnMode"), "upl": fnum(p.get("upl")),
+                "margin": fnum(p.get("margin") or p.get("imr")), "opened_at": ms_iso(p.get("cTime")),
+            }
+            for p in positions if fnum(p.get("pos"))
+        ],
+        "orders": [
+            {
+                "inst": o["instId"], "side": o.get("side"), "pos_side": o.get("posSide"), "ord_type": o.get("ordType"),
+                "px": fnum(o.get("px")), "sz": fnum(o.get("sz")), "filled": fnum(o.get("accFillSz")),
+                "tp": fnum(o.get("tpTriggerPx")) or next((fnum(a.get("tpTriggerPx")) for a in o.get("attachAlgoOrds") or [] if a.get("tpTriggerPx")), None),
+                "sl": fnum(o.get("slTriggerPx")) or next((fnum(a.get("slTriggerPx")) for a in o.get("attachAlgoOrds") or [] if a.get("slTriggerPx")), None),
+                "created_at": ms_iso(o.get("cTime")),
+            }
+            for o in orders
+        ],
+        "algo_orders": [
+            {
+                "inst": a["instId"], "side": a.get("side"), "ord_type": a.get("ordType"), "sz": fnum(a.get("sz")),
+                "tp": fnum(a.get("tpTriggerPx")), "sl": fnum(a.get("slTriggerPx")),
+                "close_position": a.get("closeFraction") == "1",
+            }
+            for a in algos
+        ],
+        "history": [
+            {
+                "inst": h["instId"], "direction": h.get("direction"), "open_px": fnum(h.get("openAvgPx")),
+                "close_px": fnum(h.get("closeAvgPx")), "size": fnum(h.get("closeTotalPos") or h.get("openMaxPos")),
+                "pnl": fnum(h.get("realizedPnl")), "fee": fnum(h.get("fee")), "close_type": h.get("type"),
+                "opened_at": ms_iso(h.get("cTime")), "closed_at": ms_iso(h.get("uTime")),
+            }
+            for h in history
+        ],
     }
 
 
