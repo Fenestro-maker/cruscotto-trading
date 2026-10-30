@@ -1,0 +1,13 @@
+# Copia in /etc/systemd/system/trading.service
+[Unit]
+Description=Cruscotto di trading (FastAPI)
+After=network.target mongod.service
+
+[Service]
+WorkingDirectory=/var/www/trading/backend
+ExecStart=/var/www/trading/backend/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8003
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

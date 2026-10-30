@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+backend/venv/
+backend/.env
+.env
+__pycache__/
+*.pyc
+.idea/
+.vscode/
