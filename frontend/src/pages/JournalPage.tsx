@@ -3,6 +3,7 @@ import { ChevronDown, Download, Trash2, Upload } from 'lucide-react';
 import { errorMessage, SETUP_LABELS, sessionsApi } from '@/api/client';
 import type { SessionStatus, Session, SetupKey, Stats, StatsGroup } from '@/api/client';
 import { Alert, Button, Card, Stat, Textarea } from '@/components/ui';
+import ScoreBadge from '@/components/ScoreBadge';
 import { cn, downloadBlob, fmtDateTime, fmtNum, fmtPrice, fmtR, instLabel } from '@/lib/format';
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
@@ -53,6 +54,7 @@ function SessionRow({ s, onSaveNote, onDelete }: { s: Session; onSaveNote: (note
           </span>
           <span className="block text-xs text-slate-500">{fmtDateTime(s.created_at)} · {STATUS_LABELS[s.status]}{s.outcome ? ` · ${OUTCOME_LABELS[s.outcome]}` : ''}</span>
         </span>
+        {s.score != null && <ScoreBadge score={s.score} />}
         <span className={cn('num text-sm', (s.r ?? 0) > 0 ? 'text-emerald-400' : (s.r ?? 0) < 0 ? 'text-rose-400' : 'text-slate-400')}>
           {s.status === 'chiusa' ? fmtR(s.r) : ''}
         </span>
@@ -158,6 +160,7 @@ export default function JournalPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <GroupTable title="Per strumento" rows={stats.by_instrument} label={instLabel} />
           <GroupTable title="Per setup" rows={stats.by_setup} label={(k) => SETUP_LABELS[k as SetupKey] ?? k} />
+          <GroupTable title="Per voto di fattibilità" rows={stats.by_score} label={(k) => (k === '-' ? 'Senza voto' : `Voto ${k}`)} />
         </div>
       )}
 

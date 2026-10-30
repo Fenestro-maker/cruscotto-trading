@@ -124,7 +124,10 @@ export interface AnalysisResult {
   invalidation: string;
   bias: string;
   risks: string[];
-  confidence: 'bassa' | 'media' | 'alta';
+  score?: number;            // voto di fattibilità 1-10 (assente nelle analisi più vecchie)
+  score_for?: string[];      // conferme che convergono sulla tesi
+  score_against?: string[];  // punti contrari
+  confidence?: 'bassa' | 'media' | 'alta'; // solo analisi più vecchie
 }
 
 export interface Analysis {
@@ -170,6 +173,7 @@ export interface Session extends PlanInput {
   exit?: number | null;
   r?: number | null;
   rr: number | null;
+  score?: number | null;
   cancel_reason?: string;
   sizing?: {
     capital: number;
@@ -205,6 +209,7 @@ export interface Stats {
   overall: StatsGroup;
   by_instrument: StatsGroup[];
   by_setup: StatsGroup[];
+  by_score: StatsGroup[];
 }
 
 // Conto OKX in sola lettura

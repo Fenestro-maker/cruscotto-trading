@@ -3,6 +3,7 @@ import type { Outcome, Session } from '@/api/client';
 import { SETUP_LABELS } from '@/api/client';
 import { cn, fmtDateTime, fmtPct, fmtPrice, instLabel } from '@/lib/format';
 import { Alert, Button, Card, Field, Input, Stat } from './ui';
+import ScoreBadge from './ScoreBadge';
 
 const STEPS = [
   { key: 'attesa', label: 'In attesa' },
@@ -79,6 +80,7 @@ export default function ActiveSession({ session, price, busy, onFill, onCancel, 
             {session.side.toUpperCase()} · {SETUP_LABELS[session.setup]}
           </span>
           {session.rr != null && <span className="num rounded-full bg-slate-800 px-2.5 py-1 text-xs">R:R {session.rr}:1</span>}
+          {session.score != null && <ScoreBadge score={session.score} />}
           {dist != null && session.status === 'attesa' && <span className="num text-xs text-slate-400">prezzo {fmtPct(dist)} dall'ingresso</span>}
         </div>
 

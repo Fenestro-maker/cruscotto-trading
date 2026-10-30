@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Brain, CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import { Brain, Check, CheckCircle2, Loader2, X, XCircle } from 'lucide-react';
 import type { Analysis } from '@/api/client';
 import { SETUP_LABELS } from '@/api/client';
 import { cn, fmtDateTime, fmtPrice, instLabel } from '@/lib/format';
 import { Alert, Button, Card, Textarea } from './ui';
+import ScoreBadge from './ScoreBadge';
 
 export function ReasonPanel({ disabled, disabledReason, busy, onRun }: {
   disabled: boolean; disabledReason?: string; busy: boolean; onRun: (note: string) => void;
@@ -66,10 +67,32 @@ export default function AnalysisCard({ analysis, onUsePlan, onNoTrade }: {
             isTrade ? (r.side === 'long' ? 'bg-emerald-900 text-emerald-200' : 'bg-rose-900 text-rose-200') : 'bg-slate-800 text-slate-300')}>
             {isTrade ? `${r.side.toUpperCase()} · ${SETUP_LABELS[r.setup]}` : 'Nessun trade'}
           </span>
-          <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300">Fiducia {r.confidence}</span>
+          {r.score == null && r.confidence && <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300">Fiducia {r.confidence}</span>}
           {analysis.rr != null && <span className="num rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300">R:R {analysis.rr}:1</span>}
           <span className="num text-xs text-slate-500">prezzo all'analisi {fmtPrice(analysis.price)}</span>
         </div>
+
+        {r.score != null && (
+          <div className="rounded-lg border border-slate-800 p-3">
+            <div className="flex items-center gap-3">
+              <ScoreBadge score={r.score} size="lg" />
+              <div>
+                <div className="text-sm font-medium text-slate-100">Fattibilità del trade</div>
+                <div className="text-xs text-slate-500">più conferme convergono, più il voto è alto</div>
+              </div>
+            </div>
+            {(r.score_for?.length || r.score_against?.length) ? (
+              <ul className="mt-3 space-y-1 text-sm">
+                {r.score_for?.map((t, i) => (
+                  <li key={`f${i}`} className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-label="a favore" /><span>{t}</span></li>
+                ))}
+                {r.score_against?.map((t, i) => (
+                  <li key={`c${i}`} className="flex gap-2"><X className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" aria-label="contro" /><span className="text-slate-300">{t}</span></li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        )}
 
         <p className="text-sm font-medium text-slate-100">{r.summary}</p>
 
