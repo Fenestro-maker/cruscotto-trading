@@ -14,6 +14,8 @@ export default function SettingsPage() {
   const [profitAlert, setProfitAlert] = useState('');
   const [reviewHours, setReviewHours] = useState('');
   const [loadingAll, setLoadingAll] = useState(false);
+  const [scanEnabled, setScanEnabled] = useState(true);
+  const [scanTime, setScanTime] = useState('08:30');
   const [loadedInfo, setLoadedInfo] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -27,6 +29,8 @@ export default function SettingsPage() {
     setInstruments(s.instruments.join('\n'));
     setProfitAlert(String(s.profit_alert_usd));
     setReviewHours(String(s.review_every_hours));
+    setScanEnabled(s.scan_enabled);
+    setScanTime(s.scan_time);
   };
 
   useEffect(() => {
@@ -46,6 +50,8 @@ export default function SettingsPage() {
         instruments: instruments.split(/[\s,]+/).filter(Boolean),
         profit_alert_usd: parseFloat(profitAlert.replace(',', '.')),
         review_every_hours: parseFloat(reviewHours.replace(',', '.')),
+        scan_enabled: scanEnabled,
+        scan_time: scanTime,
       });
       fill(data);
       setSaved(true);
@@ -103,6 +109,15 @@ export default function SettingsPage() {
           <Field label="Ricontrollo automatico dei piani in attesa (ore)" hint="Ogni quante ore Claude ricontrolla un ordine non ancora eseguito e ti manda il verdetto su Telegram. 0 = spento">
             <Input inputMode="decimal" className="num" value={reviewHours} onChange={(e) => setReviewHours(e.target.value)} />
           </Field>
+          <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+            <label className="flex items-center gap-2 text-sm text-slate-200">
+              <input type="checkbox" checked={scanEnabled} onChange={(e) => setScanEnabled(e.target.checked)} className="h-4 w-4" />
+              Classifica del mattino automatica
+            </label>
+            <Field label="Ora (italiana)" hint="Filtro tecnico su tutti gli strumenti liquidi e lettura veloce di Claude sui migliori 12; i primi 5 arrivano su Telegram. Nel weekend solo crypto.">
+              <Input type="time" value={scanTime} onChange={(e) => setScanTime(e.target.value)} disabled={!scanEnabled} />
+            </Field>
+          </div>
           {error && <Alert tone="error">{error}</Alert>}
           {saved && <Alert tone="ok">Impostazioni salvate</Alert>}
           <Button type="submit" disabled={busy}>Salva</Button>
