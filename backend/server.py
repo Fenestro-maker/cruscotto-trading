@@ -468,6 +468,136 @@ async def account(user: dict = Depends(get_current_user)):
     }
 
 
+# ---------- OKX: funding rate e open interest ----------
+
+OI_SNAPSHOT_EVERY_S = 15 * 60  # fotografia dell'open interest (OKX Europa non ha lo storico)
+_last_oi_snapshot = 0.0
+
+
+async def fetch_funding(inst: str) -> Optional[dict]:
+    """Funding attuale e degli ultimi 30 periodi (solo perpetual e X-Perp)"""
+    if inst_type_of(inst) == "SPOT":
+        return None
+    current, history = await asyncio.gather(
+        okx_public("/api/v5/public/funding-rate", {"instId": inst}),
+        okx_public("/api/v5/public/funding-rate-history", {"instId": inst, "limit": "30"}),
+    )
+    if not current:
+        return None
+    c = current[0]
+    rate = fnum(c.get("fundingRate"))
+    funding_time, next_time = fnum(c.get("fundingTime")), fnum(c.get("nextFundingTime"))
+    interval_h = round((next_time - funding_time) / 3_600_000, 2) if funding_time and next_time and next_time > funding_time else None
+    past = [fnum(h.get("realizedRate") or h.get("fundingRate")) for h in history]
+    past = [x for x in past if x is not None]
+    return {
+        "rate": rate,
+        "next_rate": fnum(c.get("nextFundingRate")),
+        "interval_h": interval_h,
+        "next_time": ms_iso(c.get("fundingTime")),
+        "annual_pct": round(rate * 100 * (24 / interval_h) * 365, 1) if rate is not None and interval_h else None,
+        "avg_30": sum(past) / len(past) if past else None,
+        "min_30": min(past) if past else None,
+        "max_30": max(past) if past else None,
+        "positive_30": sum(1 for x in past if x > 0),
+        "count_30": len(past),
+    }
+
+
+async def fetch_open_interest(inst: str) -> Optional[dict]:
+    if inst_type_of(inst) == "SPOT":
+        return None
+    rows = await okx_public("/api/v5/public/open-interest", {"instType": inst_type_of(inst), "instId": inst})
+    if not rows:
+        return None
+    r = rows[0]
+    return {"oi": fnum(r.get("oi")), "oi_ccy": fnum(r.get("oiCcy")), "oi_usd": fnum(r.get("oiUsd"))}
+
+
+async def oi_change(inst: str, oi_ccy: Optional[float], price: float, hours: int) -> Optional[dict]:
+    """Variazione dell'open interest e del prezzo rispetto alla fotografia di circa N ore fa"""
+    if oi_ccy is None:
+        return None
+    since = now_utc() - timedelta(hours=hours)
+    snap = await db.oi_snapshots.find_one(
+        {"inst": inst, "ts": {"$lte": since, "$gte": since - timedelta(hours=max(1, hours / 4))}}, sort=[("ts", -1)]
+    )
+    if not snap or not snap.get("oi_ccy"):
+        return None
+    return {
+        "hours": hours,
+        "oi_pct": round((oi_ccy - snap["oi_ccy"]) / snap["oi_ccy"] * 100, 2),
+        "price_pct": round((price - snap["price"]) / snap["price"] * 100, 2) if snap.get("price") else None,
+    }
+
+
+async def derivatives_info(inst: str, price: Optional[float] = None) -> dict:
+    """Funding e open interest; ogni parte è facoltativa (se OKX non risponde si va avanti senza)"""
+    funding, oi = await asyncio.gather(fetch_funding(inst), fetch_open_interest(inst), return_exceptions=True)
+    funding = None if isinstance(funding, Exception) else funding
+    oi = None if isinstance(oi, Exception) else oi
+    if price is None:
+        try:
+            price = (await fetch_ticker(inst))["last"]
+        except HTTPException:
+            price = None
+    changes = []
+    if oi and price:
+        for h in (4, 24):
+            ch = await oi_change(inst, oi["oi_ccy"], price, h)
+            if ch:
+                changes.append(ch)
+    return {"inst": inst, "funding": funding, "open_interest": oi, "oi_changes": changes}
+
+
+def derivatives_block(d: dict) -> str:
+    """Funding e open interest in testo per Claude"""
+    lines = ["## Derivati (OKX)"]
+    f = d.get("funding")
+    if f and f["rate"] is not None:
+        every = f" ogni {f['interval_h']:g} ore" if f["interval_h"] else ""
+        lines.append(f"Funding attuale {f['rate'] * 100:+.4f}%{every}" + (f" (≈ {f['annual_pct']:+.1f}% annuo)" if f["annual_pct"] is not None else ""))
+        if f["count_30"]:
+            lines.append(f"Ultimi {f['count_30']} periodi: media {f['avg_30'] * 100:+.4f}%, minimo {f['min_30'] * 100:+.4f}%, "
+                         f"massimo {f['max_30'] * 100:+.4f}%, positivi {f['positive_30']} su {f['count_30']}")
+    else:
+        lines.append("Funding: non disponibile")
+    o = d.get("open_interest")
+    if o and o["oi_ccy"] is not None:
+        usd = f" (≈ {o['oi_usd']:,.0f} $)" if o.get("oi_usd") else ""
+        lines.append(f"Open interest attuale: {o['oi_ccy']:,.2f} in valuta base{usd}")
+        for ch in d.get("oi_changes", []):
+            price = f", prezzo {ch['price_pct']:+.2f}%" if ch["price_pct"] is not None else ""
+            lines.append(f"Ultime {ch['hours']} ore: open interest {ch['oi_pct']:+.2f}%{price}")
+        if not d.get("oi_changes"):
+            lines.append("Variazione dell'open interest: storico non ancora disponibile")
+    else:
+        lines.append("Open interest: non disponibile")
+    return "\n".join(lines)
+
+
+async def snapshot_open_interest() -> None:
+    """Ogni 15 minuti salva open interest e prezzo degli strumenti seguiti (storico per le variazioni)"""
+    global _last_oi_snapshot
+    if time.time() - _last_oi_snapshot < OI_SNAPSHOT_EVERY_S:
+        return
+    _last_oi_snapshot = time.time()
+    insts = set((await load_settings())["instruments"])
+    insts |= {d["instrument"] async for d in db.sessions.find({"status": {"$in": ["attesa", "aperta"]}}, {"instrument": 1})}
+    for inst in insts:
+        try:
+            oi, ticker = await asyncio.gather(fetch_open_interest(inst), fetch_ticker(inst))
+        except HTTPException:
+            continue
+        if oi and oi["oi_ccy"] is not None:
+            await db.oi_snapshots.insert_one({"inst": inst, "ts": now_utc(), "oi_ccy": oi["oi_ccy"], "price": ticker["last"]})
+
+
+@api.get("/market/derivatives")
+async def market_derivatives(inst: str, user: dict = Depends(get_current_user)):
+    return await derivatives_info(inst)
+
+
 # ---------- Indicatori per l'analisi ----------
 
 def sma(values: list[float], n: int) -> Optional[float]:
@@ -552,6 +682,10 @@ Indicazioni sulla risposta:
 - expiry_hours: entro quante ore annullare l'ordine se non viene eseguito (di solito fino a fine sessione).
 - Se decision è no_trade, metti side "none", setup "nessuno" e i livelli a null; spiega cosa aspetteresti per entrare.
 - Oro, petrolio, indici e valute hanno orari di mercato: chiusure nel weekend e pause creano buchi nelle candele. Tienine conto e segnala nei rischi gli eventi tipici (Fed/BCE, inflazione USA, scorte di petrolio del mercoledì, OPEC, dati sul lavoro USA).
+- Funding rate e open interest (sezione "Derivati") sono contesto sul posizionamento, non un segnale di ingresso: la decisione resta sulla price action.
+  · Funding molto positivo (long affollati) o molto negativo (short affollati) rispetto alla sua media: rischio di movimento brusco contro la folla; un trade nella stessa direzione della folla merita un voto più basso, uno contro la folla su un livello chiave può guadagnare una conferma.
+  · Prezzo su e open interest su: nuove posizioni sostengono il movimento. Prezzo su e open interest giù: chiusure di short, movimento meno solido. Prezzo giù e open interest su: nuovi short. Prezzo giù e open interest giù: chiusure di long (spesso esaurimento).
+  · Citali in score_for / score_against solo quando dicono qualcosa di chiaro; se mancano, non inventarli.
 - Usa solo i dati forniti; se mancano informazioni importanti dillo nei rischi.
 
 Voto di fattibilità (score, intero da 1 a 10): quanta convinzione c'è di poter fare il trade secondo il metodo.
@@ -672,13 +806,17 @@ async def market_context(inst: str) -> tuple[dict, list[str], list[str]]:
     ticker, *series = await asyncio.gather(
         fetch_ticker(inst), *(fetch_candles(inst, tf, n) for tf, n in ANALYSIS_CANDLES.items())
     )
+    derivatives = await derivatives_info(inst, ticker["last"])
     now = datetime.now(TZ)
     header = [
         f"Strumento: {inst} (OKX). Ora attuale: {now.strftime('%A %d/%m/%Y %H:%M')} (ora italiana).",
         f"Ultimo prezzo {fmt_price(ticker['last'])} · 24h: apertura {fmt_price(ticker['open24h'])}, "
         f"massimo {fmt_price(ticker['high24h'])}, minimo {fmt_price(ticker['low24h'])}.",
     ]
-    return ticker, header, [candles_block(tf, candles) for tf, candles in zip(ANALYSIS_CANDLES, series)]
+    blocks = [candles_block(tf, candles) for tf, candles in zip(ANALYSIS_CANDLES, series)]
+    if inst_type_of(inst) != "SPOT":
+        blocks.append(derivatives_block(derivatives))
+    return ticker, header, blocks
 
 
 async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user)):
@@ -1367,6 +1505,10 @@ def instrument_label(inst: str) -> str:
 async def monitor_loop() -> None:
     while True:
         try:
+            await snapshot_open_interest()
+        except Exception as e:  # il ciclo non deve mai fermarsi
+            print(f"[open interest] errore inatteso: {e!r}", flush=True)
+        try:
             await auto_reviews()
         except Exception as e:  # il ciclo non deve mai fermarsi
             print(f"[ricontrollo] errore inatteso: {e!r}", flush=True)
@@ -1402,6 +1544,8 @@ async def create_indexes():
     await db.sessions.create_index("created_at")
     await db.analyses.create_index("created_at")
     await db.notifications.create_index("created_at")
+    await db.oi_snapshots.create_index([("inst", 1), ("ts", -1)])
+    await db.oi_snapshots.create_index("ts", expireAfterSeconds=8 * 86400)
     app.state.monitor = asyncio.create_task(monitor_loop())
 
 
