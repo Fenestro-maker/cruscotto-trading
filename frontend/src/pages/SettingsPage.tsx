@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { errorMessage, settingsApi } from '@/api/client';
+import { errorMessage, marketApi, settingsApi } from '@/api/client';
 import type { Settings } from '@/api/client';
 import { Alert, Button, Card, Field, Input, Textarea } from '@/components/ui';
 import NotificationsCard from '@/components/NotificationsCard';
@@ -13,6 +13,8 @@ export default function SettingsPage() {
   const [instruments, setInstruments] = useState('');
   const [profitAlert, setProfitAlert] = useState('');
   const [reviewHours, setReviewHours] = useState('');
+  const [loadingAll, setLoadingAll] = useState(false);
+  const [loadedInfo, setLoadedInfo] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -54,6 +56,24 @@ export default function SettingsPage() {
     }
   };
 
+  // Aggiunge in fondo all'elenco tutti gli X-Perp di OKX non ancora presenti (da salvare poi con «Salva»)
+  const loadAllXperps = async () => {
+    setLoadingAll(true);
+    setError('');
+    setLoadedInfo('');
+    try {
+      const { data } = await marketApi.xperps();
+      const current = instruments.split(/[\s,]+/).filter(Boolean);
+      const added = data.filter((i) => !current.includes(i));
+      setInstruments([...current, ...added].join('\n'));
+      setLoadedInfo(`Aggiunti ${added.length} X-Perp (in tutto ${current.length + added.length} strumenti): premi «Salva» per confermare.`);
+    } catch (err) {
+      setError(errorMessage(err, 'Elenco degli X-Perp non disponibile'));
+    } finally {
+      setLoadingAll(false);
+    }
+  };
+
   if (!settings) return error ? <Alert tone="error">{error}</Alert> : <p className="text-sm text-slate-500">Caricamento…</p>;
   const r = settings.rules;
 
@@ -70,9 +90,13 @@ export default function SettingsPage() {
           <Field label="Leva" hint={`Da 1 a ${r.max_leverage}x, margine isolato. Decide solo il margine, non il rischio`}>
             <Input inputMode="decimal" className="num" value={leverage} onChange={(e) => setLeverage(e.target.value)} />
           </Field>
-          <Field label="Strumenti OKX (uno per riga)" hint="Codici API di OKX. Su OKX Europa gli X-Perp sono del tipo ETH-USD_UM_XPERP-310404">
-            <Textarea rows={4} className="num" value={instruments} onChange={(e) => setInstruments(e.target.value)} />
+          <Field label={`Strumenti OKX (uno per riga · ${instruments.split(/[\s,]+/).filter(Boolean).length})`} hint="Codici API di OKX. Su OKX Europa gli X-Perp sono del tipo ETH-USD_UM_XPERP-310404. I primi della lista sono quelli che trovi per primi nel menu.">
+            <Textarea rows={6} className="num" value={instruments} onChange={(e) => setInstruments(e.target.value)} />
           </Field>
+          <Button type="button" variant="secondary" onClick={loadAllXperps} disabled={loadingAll}>
+            {loadingAll ? 'Caricamento…' : 'Carica tutti gli X-Perp di OKX'}
+          </Button>
+          {loadedInfo && <Alert tone="info">{loadedInfo}</Alert>}
           <Field label="Notifica di guadagno ($)" hint="Telegram ti avvisa quando una posizione aperta guadagna almeno questa cifra">
             <Input inputMode="decimal" className="num" value={profitAlert} onChange={(e) => setProfitAlert(e.target.value)} />
           </Field>

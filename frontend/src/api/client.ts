@@ -356,6 +356,7 @@ export const marketApi = {
   candles: (inst: string, tf: Timeframe) => api.get<Candle[]>('/market/candles', { params: { inst, tf, limit: 300 } }),
   instrument: (inst: string) => api.get<InstrumentInfo>('/market/instrument', { params: { inst } }),
   derivatives: (inst: string) => api.get<Derivatives>('/market/derivatives', { params: { inst } }),
+  xperps: () => api.get<string[]>('/market/xperps'),
 };
 
 export const analysisApi = {

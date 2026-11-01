@@ -11,8 +11,9 @@ import RiskPanel from '@/components/RiskPanel';
 import AccountPanel from '@/components/AccountPanel';
 import ReviewPanel from '@/components/ReviewPanel';
 import DerivativesStrip from '@/components/DerivativesStrip';
+import InstrumentPicker from '@/components/InstrumentPicker';
 import ActiveSession from '@/components/ActiveSession';
-import { Alert, Button, Card, Select } from '@/components/ui';
+import { Alert, Button, Card } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
 import { cn, fmtPct, fmtPrice, instLabel } from '@/lib/format';
 
@@ -173,15 +174,11 @@ export default function SessionPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="w-56">
-          <Select
-            aria-label="Strumento"
-            value={shownInst}
-            onChange={(e) => { setInst(e.target.value); setForm(null); }}
-          >
-            {settings.instruments.map((i) => <option key={i} value={i}>{instLabel(i)}</option>)}
-          </Select>
-        </div>
+        <InstrumentPicker
+          instruments={settings.instruments}
+          value={shownInst}
+          onChange={(i) => { setInst(i); setForm(null); }}
+        />
         <div className="flex items-baseline gap-2">
           <span className="num text-2xl font-semibold text-slate-50">{fmtPrice(ticker?.last)}</span>
           {change != null && <span className={cn('num text-sm', change >= 0 ? 'text-emerald-400' : 'text-rose-400')}>{fmtPct(change)} 24h</span>}
