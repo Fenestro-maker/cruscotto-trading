@@ -57,6 +57,15 @@ async def fake_okx_public(path: str, params: dict) -> list:
         last = float(fake_series("15m")[0][4]) + random.uniform(-2, 2)
         return [{"last": f"{last:.2f}", "bidPx": f"{last - 0.05:.2f}", "askPx": f"{last + 0.05:.2f}",
                  "open24h": "2301.10", "high24h": "2392.40", "low24h": "2288.70", "ts": str(int(time.time() * 1000))}]
+    if path == "/api/v5/public/funding-rate":
+        now = int(time.time() * 1000) // 14_400_000 * 14_400_000
+        return [{"instId": inst, "fundingRate": "0.00021", "nextFundingRate": "", "fundingTime": str(now + 14_400_000),
+                 "nextFundingTime": str(now + 28_800_000)}]
+    if path == "/api/v5/public/funding-rate-history":
+        rnd = random.Random(inst)
+        return [{"fundingRate": f"{rnd.uniform(-0.00005, 0.00015):.6f}", "realizedRate": "", "fundingTime": "0"} for _ in range(30)]
+    if path == "/api/v5/public/open-interest":
+        return [{"instId": inst, "oi": "1520000", "oiCcy": "152.0", "oiUsd": "355800000"}]
     if path == "/api/v5/public/instruments":
         return [{"instId": inst, "ctVal": "0.1", "ctValCcy": inst.split("-")[0], "lotSz": "0.01",
                  "minSz": "0.01", "tickSz": "0.01", "settleCcy": "USDC"}]

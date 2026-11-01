@@ -334,10 +334,26 @@ export const notificationsApi = {
   test: () => api.post('/notifications/test'),
 };
 
+export interface Derivatives {
+  inst: string;
+  funding: {
+    rate: number | null;        // per periodo (0.0001 = 0,01%)
+    interval_h: number | null;  // ore tra un pagamento e l'altro
+    next_time: string | null;
+    annual_pct: number | null;
+    avg_30: number | null;
+    count_30: number;
+    positive_30: number;
+  } | null;
+  open_interest: { oi: number | null; oi_ccy: number | null; oi_usd: number | null } | null;
+  oi_changes: Array<{ hours: number; oi_pct: number; price_pct: number | null }>;
+}
+
 export const marketApi = {
   ticker: (inst: string) => api.get<Ticker>('/market/ticker', { params: { inst } }),
   candles: (inst: string, tf: Timeframe) => api.get<Candle[]>('/market/candles', { params: { inst, tf, limit: 300 } }),
   instrument: (inst: string) => api.get<InstrumentInfo>('/market/instrument', { params: { inst } }),
+  derivatives: (inst: string) => api.get<Derivatives>('/market/derivatives', { params: { inst } }),
 };
 
 export const analysisApi = {

@@ -10,6 +10,7 @@ import type { PlanFormState } from '@/lib/planForm';
 import RiskPanel from '@/components/RiskPanel';
 import AccountPanel from '@/components/AccountPanel';
 import ReviewPanel from '@/components/ReviewPanel';
+import DerivativesStrip from '@/components/DerivativesStrip';
 import ActiveSession from '@/components/ActiveSession';
 import { Alert, Button, Card, Select } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
@@ -190,6 +191,7 @@ export default function SessionPage() {
           </span>
         )}
       </div>
+      <DerivativesStrip inst={shownInst} />
       {priceError && <Alert tone="warn">{priceError}</Alert>}
       {error && <Alert tone="error">{error}</Alert>}
 
