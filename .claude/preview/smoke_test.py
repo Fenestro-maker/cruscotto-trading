@@ -34,6 +34,16 @@ with TestClient(server.app) as c:
     check("salva impostazioni", c.put("/api/settings", json={
         "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": [INST], "profit_alert_usd": 40, "review_every_hours": 24,
     }), key="instruments")
+    xperps = check("elenco X-Perp", c.get("/api/market/xperps")).json()
+    if INST not in xperps or any("_XPERP-" not in i for i in xperps):
+        failures.append(f"elenco X-Perp inatteso: {xperps[:5]}")
+    check("salva tutti gli X-Perp", c.put("/api/settings", json={
+        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": xperps, "profit_alert_usd": 40, "review_every_hours": 24,
+    }), key="instruments")
+    check("codice inesistente rifiutato", c.put("/api/settings", json={
+        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": [INST, "PIPPO-USD_UM_XPERP-310404"],
+        "profit_alert_usd": 40, "review_every_hours": 24,
+    }), status=400)
     check("prezzo", c.get("/api/market/ticker", params={"inst": INST}), key="last")
     check("candele", c.get("/api/market/candles", params={"inst": INST, "tf": "1H"}))
     check("contratto", c.get("/api/market/instrument", params={"inst": INST}), key="ct_val")

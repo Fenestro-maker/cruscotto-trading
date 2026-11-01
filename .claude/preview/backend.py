@@ -49,7 +49,25 @@ def fake_series(bar: str, start_price: float = 2340.0) -> list:
     return rows
 
 
+# Elenco simulato di strumenti (senza instId le richieste restituiscono tutti gli strumenti del tipo)
+FAKE_INSTRUMENTS = {
+    "FUTURES": [f"{b}-USD_UM_XPERP-310404" for b in ("BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "LTC", "SUI", "PEPE")]
+               + ["BZ-USD_UM_XPERP-310509", "CL-USD_UM_XPERP-310509", "XAU-USD_UM_XPERP-310502", "XAG-USD_UM_XPERP-310509",
+                  "SPY-USD_UM_XPERP-310613", "QQQ-USD_UM_XPERP-310613", "US100-USD_UM_XPERP-311010", "NVDA-USD_UM_XPERP-310613",
+                  "AAPL-USD_UM_XPERP-310613", "TSLA-USD_UM_XPERP-310613", "BTC-USD-261225"],
+    "SWAP": ["ETH-USDC-SWAP", "BTC-USDC-SWAP", "SOL-USDC-SWAP"],
+    "SPOT": ["ETH-USDC", "BTC-USDC"],
+}
+
+
 async def fake_okx_public(path: str, params: dict) -> list:
+    if "instId" not in params and path in ("/api/v5/public/instruments", "/api/v5/public/open-interest", "/api/v5/market/tickers"):
+        ids = FAKE_INSTRUMENTS.get(params.get("instType", ""), [])
+        if path == "/api/v5/public/instruments":
+            return [{"instId": i} for i in ids]
+        if path == "/api/v5/public/open-interest":
+            return [{"instId": i, "oiCcy": "152.0"} for i in ids]
+        return [{"instId": i, "last": fake_series("15m")[0][4]} for i in ids]
     inst = params.get("instId", "ETH-USDC-SWAP")
     if path == "/api/v5/market/candles":
         return fake_series(params["bar"])[: int(params.get("limit", 100))]

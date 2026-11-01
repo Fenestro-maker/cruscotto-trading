@@ -193,7 +193,7 @@ class SettingsIn(BaseModel):
     capital: float = Field(gt=0)
     risk_pct: float = Field(gt=0, le=MAX_RISK_PCT)
     leverage: float = Field(ge=1, le=MAX_LEVERAGE)
-    instruments: list[str] = Field(min_length=1, max_length=20)
+    instruments: list[str] = Field(min_length=1, max_length=500)
     profit_alert_usd: float = Field(default=40.0, gt=0)
     review_every_hours: float = Field(default=24.0, ge=0, le=168)  # 0 = ricontrollo automatico spento
 
@@ -224,8 +224,10 @@ async def get_settings(user: dict = Depends(get_current_user)):
 
 @api.put("/settings")
 async def put_settings(data: SettingsIn, user: dict = Depends(get_current_user)):
-    results = await asyncio.gather(*(instrument_exists(i) for i in data.instruments))
-    missing = [i for i, ok in zip(data.instruments, results) if not ok]
+    # Un elenco per tipo di strumento (poche richieste anche con centinaia di codici)
+    types = sorted({inst_type_of(i) for i in data.instruments})
+    known = dict(zip(types, await asyncio.gather(*(okx_instrument_ids(t) for t in types))))
+    missing = [i for i in data.instruments if i not in known[inst_type_of(i)]]
     if missing:
         raise HTTPException(status_code=400, detail=f"Su OKX non esistono: {', '.join(missing)}. Controlla i codici (su OKX Europa gli X-Perp sono del tipo BTC-USD_UM_XPERP-310404).")
     await db.settings.update_one({"_id": "main"}, {"$set": data.model_dump()}, upsert=True)
@@ -341,14 +343,23 @@ async def market_instrument(inst: str, user: dict = Depends(get_current_user)):
     }
 
 
-async def instrument_exists(inst: str) -> bool:
-    inst_type = inst_type_of(inst)
-    try:
-        return bool(await okx_public("/api/v5/public/instruments", {"instType": inst_type, "instId": inst}))
-    except HTTPException as e:
-        if "51001" in str(e.detail):  # strumento inesistente
-            return False
-        raise
+_instrument_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+async def okx_instrument_ids(inst_type: str) -> list[str]:
+    """Tutti i codici OKX di un tipo (SWAP, FUTURES, SPOT), nell'ordine di OKX; tenuti 10 minuti in memoria"""
+    cached = _instrument_cache.get(inst_type)
+    if cached and time.time() - cached[0] < 600:
+        return cached[1]
+    ids = [r["instId"] for r in await okx_public("/api/v5/public/instruments", {"instType": inst_type})]
+    _instrument_cache[inst_type] = (time.time(), ids)
+    return ids
+
+
+@api.get("/market/xperps")
+async def market_xperps(user: dict = Depends(get_current_user)):
+    """Tutti gli X-Perp di OKX Europa (FUTURES con codice ..._XPERP-AAMMGG)"""
+    return [i for i in await okx_instrument_ids("FUTURES") if "_XPERP-" in i]
 
 
 # ---------- OKX: conto in sola lettura ----------
@@ -584,13 +595,24 @@ async def snapshot_open_interest() -> None:
     _last_oi_snapshot = time.time()
     insts = set((await load_settings())["instruments"])
     insts |= {d["instrument"] async for d in db.sessions.find({"status": {"$in": ["attesa", "aperta"]}}, {"instrument": 1})}
-    for inst in insts:
+    now = now_utc()
+    # Due richieste per tipo di strumento, qualunque sia il numero di strumenti seguiti
+    for inst_type in sorted({inst_type_of(i) for i in insts} - {"SPOT"}):
         try:
-            oi, ticker = await asyncio.gather(fetch_open_interest(inst), fetch_ticker(inst))
+            ois, tickers = await asyncio.gather(
+                okx_public("/api/v5/public/open-interest", {"instType": inst_type}),
+                okx_public("/api/v5/market/tickers", {"instType": inst_type}),
+            )
         except HTTPException:
             continue
-        if oi and oi["oi_ccy"] is not None:
-            await db.oi_snapshots.insert_one({"inst": inst, "ts": now_utc(), "oi_ccy": oi["oi_ccy"], "price": ticker["last"]})
+        prices = {t["instId"]: fnum(t.get("last")) for t in tickers}
+        docs = [
+            {"inst": o["instId"], "ts": now, "oi_ccy": fnum(o.get("oiCcy")), "price": prices.get(o["instId"])}
+            for o in ois
+            if o["instId"] in insts and fnum(o.get("oiCcy")) and prices.get(o["instId"])
+        ]
+        if docs:
+            await db.oi_snapshots.insert_many(docs)
 
 
 @api.get("/market/derivatives")
