@@ -46,6 +46,7 @@ export interface Settings {
   leverage: number;
   instruments: string[];
   profit_alert_usd: number;
+  review_every_hours: number; // 0 = ricontrollo automatico spento
   rules: Rules;
   ai_configured: boolean;
   ai_model: string;
@@ -164,6 +165,31 @@ export interface PlanInput {
   analysis_id: string | null;
 }
 
+// Ricontrollo con Claude di un piano in attesa
+export interface ReviewResult {
+  verdict: 'mantieni' | 'modifica' | 'annulla';
+  summary: string;
+  changes: string[];
+  score: number;
+  score_for: string[];
+  score_against: string[];
+  entry: number | null;
+  stop: number | null;
+  tp1: number | null;
+  target: number | null;
+  cancel_above: number | null;
+  cancel_below: number | null;
+}
+
+export interface SessionReview {
+  created_at: string;
+  trigger: 'manuale' | 'automatico';
+  price: number;
+  hours: number; // ore trascorse dalla creazione del piano
+  result: ReviewResult;
+  plan_issues: string[];
+}
+
 export interface Session extends PlanInput {
   id: string;
   n: number;
@@ -176,6 +202,8 @@ export interface Session extends PlanInput {
   r?: number | null;
   rr: number | null;
   score?: number | null;
+  reviews?: SessionReview[];
+  last_review_at?: string | null;
   cancel_reason?: string;
   sizing?: {
     capital: number;
@@ -289,7 +317,7 @@ export const authApi = {
 
 export const settingsApi = {
   get: () => api.get<Settings>('/settings'),
-  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments' | 'profit_alert_usd'>) => api.put<Settings>('/settings', data),
+  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments' | 'profit_alert_usd' | 'review_every_hours'>) => api.put<Settings>('/settings', data),
 };
 
 export interface NotificationItem {
@@ -325,6 +353,7 @@ export const sessionsApi = {
   update: (id: string, data: PlanInput) => api.put<Session>(`/sessions/${id}`, data),
   setNote: (id: string, note: string) => api.put<Session>(`/sessions/${id}/note`, { note }),
   fill: (id: string) => api.post<Session>(`/sessions/${id}/fill`, {}),
+  review: (id: string) => api.post<Session>(`/sessions/${id}/review`, {}, { timeout: 600_000 }),
   close: (id: string, data: { outcome: Outcome; exit_price?: number; tp1_taken?: boolean }) =>
     api.post<Session>(`/sessions/${id}/close`, data),
   cancel: (id: string, reason: string) => api.post<Session>(`/sessions/${id}/cancel`, { reason }),

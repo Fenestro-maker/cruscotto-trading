@@ -9,6 +9,7 @@ import { EMPTY_FORM, formFromAnalysis, formFromPlan, planFromForm } from '@/lib/
 import type { PlanFormState } from '@/lib/planForm';
 import RiskPanel from '@/components/RiskPanel';
 import AccountPanel from '@/components/AccountPanel';
+import ReviewPanel from '@/components/ReviewPanel';
 import ActiveSession from '@/components/ActiveSession';
 import { Alert, Button, Card, Select } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
@@ -221,6 +222,23 @@ export default function SessionPage() {
               onClose={(outcome: Outcome, exitPrice?: number, tp1Taken?: boolean) =>
                 act(() => sessionsApi.close(active.id, { outcome, exit_price: exitPrice, tp1_taken: tp1Taken }))}
               onEdit={() => { setInst(active.instrument); setEditingId(active.id); setForm(formFromPlan(active)); }}
+            />
+          )}
+          {active && active.status === 'attesa' && !form && (
+            <ReviewPanel
+              session={active}
+              reviewEveryHours={settings.review_every_hours}
+              aiConfigured={settings.ai_configured}
+              busy={busy}
+              onReview={() => act(() => sessionsApi.review(active.id))}
+              onApply={(r) => {
+                setInst(active.instrument);
+                setEditingId(active.id);
+                setForm(formFromPlan({
+                  ...active, entry: r.entry, stop: r.stop, tp1: r.tp1, target: r.target,
+                  cancel_above: r.cancel_above, cancel_below: r.cancel_below,
+                }));
+              }}
             />
           )}
           {!viewingActive && !form && (
