@@ -80,6 +80,7 @@ DEFAULT_SETTINGS = {
     "leverage": 2.0,
     "instruments": ["ETH-USDC-SWAP", "BTC-USDC-SWAP", "SOL-USDC-SWAP"],
     "profit_alert_usd": 40.0,
+    "review_every_hours": 24.0,
 }
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -193,6 +194,7 @@ class SettingsIn(BaseModel):
     leverage: float = Field(ge=1, le=MAX_LEVERAGE)
     instruments: list[str] = Field(min_length=1, max_length=20)
     profit_alert_usd: float = Field(default=40.0, gt=0)
+    review_every_hours: float = Field(default=24.0, ge=0, le=168)  # 0 = ricontrollo automatico spento
 
     @field_validator("instruments")
     @classmethod
@@ -619,7 +621,7 @@ def get_ai() -> AsyncAnthropic:
     return _ai
 
 
-async def ask_claude(system: str, user_text: str) -> tuple[dict, dict]:
+async def ask_claude(system: str, user_text: str, schema: Optional[dict] = None) -> tuple[dict, dict]:
     """Richiesta a Claude con risposta JSON validata dallo schema; restituisce (risposta, uso token)"""
     try:
         async with get_ai().beta.messages.stream(
@@ -628,7 +630,7 @@ async def ask_claude(system: str, user_text: str) -> tuple[dict, dict]:
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
             thinking={"type": "adaptive"},
-            output_config={"effort": AI_EFFORT, "format": {"type": "json_schema", "schema": ANALYSIS_SCHEMA}},
+            output_config={"effort": AI_EFFORT, "format": {"type": "json_schema", "schema": schema or ANALYSIS_SCHEMA}},
             system=system,
             messages=[{"role": "user", "content": user_text}],
         ) as stream:
@@ -664,26 +666,34 @@ class AnalysisIn(BaseModel):
 
 
 @api.post("/analysis")
+async def market_context(inst: str) -> tuple[dict, list[str], list[str]]:
+    """Prezzo attuale e candele di tutti i timeframe, già in testo per Claude"""
+    ticker, *series = await asyncio.gather(
+        fetch_ticker(inst), *(fetch_candles(inst, tf, n) for tf, n in ANALYSIS_CANDLES.items())
+    )
+    now = datetime.now(TZ)
+    header = [
+        f"Strumento: {inst} (OKX). Ora attuale: {now.strftime('%A %d/%m/%Y %H:%M')} (ora italiana).",
+        f"Ultimo prezzo {fmt_price(ticker['last'])} · 24h: apertura {fmt_price(ticker['open24h'])}, "
+        f"massimo {fmt_price(ticker['high24h'])}, minimo {fmt_price(ticker['low24h'])}.",
+    ]
+    return ticker, header, [candles_block(tf, candles) for tf, candles in zip(ANALYSIS_CANDLES, series)]
+
+
 async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user)):
     daily = await daily_status()
     if daily["stopped"]:
         raise HTTPException(status_code=409, detail=daily["message"])
     inst = data.instrument.strip().upper()
     settings = await load_settings()
-    ticker, *series = await asyncio.gather(
-        fetch_ticker(inst), *(fetch_candles(inst, tf, n) for tf, n in ANALYSIS_CANDLES.items())
-    )
-    now = datetime.now(TZ)
-    parts = [
-        f"Strumento: {inst} (OKX). Ora attuale: {now.strftime('%A %d/%m/%Y %H:%M')} (ora italiana).",
-        f"Ultimo prezzo {fmt_price(ticker['last'])} · 24h: apertura {fmt_price(ticker['open24h'])}, "
-        f"massimo {fmt_price(ticker['high24h'])}, minimo {fmt_price(ticker['low24h'])}.",
+    ticker, header, blocks = await market_context(inst)
+    parts = header + [
         f"Capitale {settings['capital']:g} · rischio {settings['risk_pct']:g}% · leva {settings['leverage']:g}x.",
         f"Situazione di oggi: {daily['message']}",
     ]
     if data.note.strip():
         parts.append(f"Nota del trader per questa sessione: {data.note.strip()}")
-    parts += [candles_block(tf, candles) for tf, candles in zip(ANALYSIS_CANDLES, series)]
+    parts += blocks
     parts.append("Fai l'analisi top-down e proponi il piano della sessione (o nessun trade).")
     result, usage = await ask_claude(ANALYSIS_SYSTEM, "\n\n".join(parts))
 
@@ -792,6 +802,9 @@ def session_out(doc: dict) -> dict:
         if isinstance(doc.get(k), datetime):
             out[k] = iso(doc[k])
     out["rr"] = rr_of(doc.get("entry"), doc.get("stop"), doc.get("target"))
+    if isinstance(doc.get("last_review_at"), datetime):
+        out["last_review_at"] = iso(doc["last_review_at"])
+    out["reviews"] = [{**r, "created_at": iso(r["created_at"])} for r in doc.get("reviews", [])]
     return out
 
 
@@ -852,6 +865,137 @@ async def analysis_score(analysis_id: Optional[str]) -> Optional[int]:
         return None
     doc = await db.analyses.find_one({"_id": ObjectId(analysis_id)}, {"result.score": 1})
     return (doc or {}).get("result", {}).get("score")
+
+
+REVIEW_SYSTEM = ANALYSIS_SYSTEM + """
+
+RICONTROLLO DI UN ORDINE IN ATTESA
+Ora non proponi un trade nuovo: ricontrolli un piano già deciso, con l'ordine limit inserito ma non ancora eseguito.
+Rileggi il mercato con lo stesso metodo top-down e confrontalo con il piano originale. Domanda: vale ancora la pena aspettare che l'ordine entri, oppure lo scenario è cambiato?
+- verdict "mantieni": la tesi regge, i livelli vanno bene così.
+- verdict "modifica": la tesi regge ma i livelli vanno aggiornati (zona di ingresso spostata, stop o target da rivedere); proponi i nuovi livelli nei campi entry, stop, tp1, target, cancel_above, cancel_below, rispettando le regole (R:R minimo, ordine dei livelli). La direzione resta quella del piano.
+- verdict "annulla": la tesi non regge più (struttura rotta, invalidazione toccata, setup scaduto, R:R non più sensato).
+Con verdict diverso da "modifica" metti i livelli a null.
+In changes elenca cosa è cambiato rispetto al piano, con i prezzi. Il voto (score) è la fattibilità di questo trade ADESSO, con gli stessi criteri dell'analisi.
+"""
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["mantieni", "modifica", "annulla"]},
+        "summary": {"type": "string"},
+        "changes": {"type": "array", "items": {"type": "string"}},
+        "score": {"type": "integer"},
+        "score_for": {"type": "array", "items": {"type": "string"}},
+        "score_against": {"type": "array", "items": {"type": "string"}},
+        "entry": NUM_OR_NULL,
+        "stop": NUM_OR_NULL,
+        "tp1": NUM_OR_NULL,
+        "target": NUM_OR_NULL,
+        "cancel_above": NUM_OR_NULL,
+        "cancel_below": NUM_OR_NULL,
+    },
+    "required": ["verdict", "summary", "changes", "score", "score_for", "score_against",
+                 "entry", "stop", "tp1", "target", "cancel_above", "cancel_below"],
+    "additionalProperties": False,
+}
+
+# Ricontrolli in corso (per non lanciarne due insieme sulla stessa sessione)
+REVIEWS_RUNNING: set[str] = set()
+
+
+async def review_session(doc: dict, trigger: str) -> dict:
+    """Ricontrolla con Claude un piano in attesa e salva il verdetto nella sessione"""
+    sid = str(doc["_id"])
+    if sid in REVIEWS_RUNNING:
+        raise HTTPException(status_code=409, detail="Un ricontrollo di questa sessione è già in corso")
+    REVIEWS_RUNNING.add(sid)
+    try:
+        inst = doc["instrument"]
+        ticker, header, blocks = await market_context(inst)
+        created = doc["created_at"] if doc["created_at"].tzinfo else doc["created_at"].replace(tzinfo=timezone.utc)
+        hours = (now_utc() - created).total_seconds() / 3600
+        plan = [
+            f"PIANO ORIGINALE (sessione {doc['n']}, creato il {created.astimezone(TZ).strftime('%d/%m/%Y %H:%M')}, {hours:.0f} ore fa):",
+            f"{doc['side'].upper()} · setup {SETUPS.get(doc['setup'], doc['setup'])} · ingresso limit {fmt_price(doc['entry'])} · "
+            f"stop {fmt_price(doc['stop'])} · TP1 {fmt_price(doc['tp1'])} · target {fmt_price(doc['target'])}",
+            f"Annulla sopra {fmt_price(doc.get('cancel_above'))} · annulla sotto {fmt_price(doc.get('cancel_below'))} · "
+            f"scadenza {doc.get('expiry') or 'nessuna'}",
+            f"Bias: {doc.get('bias') or '-'}",
+        ]
+        if doc.get("analysis_id") and ObjectId.is_valid(doc["analysis_id"]):
+            a = await db.analyses.find_one({"_id": ObjectId(doc["analysis_id"])})
+            if a:
+                r = a["result"]
+                plan.append(f"Analisi di partenza (voto {r.get('score', 'n/d')}/10): {r.get('summary', '')}")
+                plan.append(f"Invalidazione prevista: {r.get('invalidation', '-')}")
+        if doc.get("reviews"):
+            last = doc["reviews"][-1]["result"]
+            plan.append(f"Ultimo ricontrollo: {last['verdict']} (voto {last['score']}/10): {last['summary']}")
+        parts = header + plan + blocks + ["Ricontrolla il piano: mantieni, modifica i livelli o annulla?"]
+        result, usage = await ask_claude(REVIEW_SYSTEM, "\n\n".join(parts), REVIEW_SCHEMA)
+        result["score"] = max(1, min(10, int(result["score"])))
+        issues: list[str] = []
+        if result["verdict"] == "modifica":
+            issues = plan_problems(doc["side"], result["entry"], result["stop"], result["tp1"], result["target"])
+        review = {
+            "created_at": now_utc(), "trigger": trigger, "price": ticker["last"], "hours": round(hours, 1),
+            "result": result, "plan_issues": issues, "usage": usage,
+        }
+        await db.sessions.update_one({"_id": doc["_id"]}, {"$push": {"reviews": review}, "$set": {"last_review_at": review["created_at"]}})
+        return review
+    finally:
+        REVIEWS_RUNNING.discard(sid)
+
+
+VERDICT_ICONS = {"mantieni": "🟢 MANTIENI", "modifica": "🟡 MODIFICA", "annulla": "🔴 ANNULLA"}
+
+
+def review_text(doc: dict, review: dict) -> str:
+    r = review["result"]
+    lines = [f"🔄 <b>Ricontrollo sessione {doc['n']}</b> · {instrument_label(doc['instrument'])}",
+             f"{VERDICT_ICONS[r['verdict']]} · voto {r['score']}/10 · prezzo {fmt_price(review['price'])}",
+             r["summary"]]
+    lines += [f"• {c}" for c in r["changes"][:4]]
+    if r["verdict"] == "modifica" and r["entry"] is not None:
+        lines.append(f"Nuovi livelli: ingresso {fmt_price(r['entry'])} · stop {fmt_price(r['stop'])} · "
+                     f"TP1 {fmt_price(r['tp1'])} · target {fmt_price(r['target'])}")
+    lines.append("Decidi tu nel cruscotto e su OKX.")
+    return "\n".join(lines)
+
+
+async def auto_reviews() -> None:
+    """Ricontrollo automatico dei piani in attesa ogni N ore (impostazioni); il verdetto arriva su Telegram"""
+    hours = float((await load_settings()).get("review_every_hours") or 0)
+    if hours <= 0 or not ANTHROPIC_API_KEY:
+        return
+    async for doc in db.sessions.find({"status": "attesa"}):
+        last = doc.get("last_review_at") or doc["created_at"]
+        last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+        if (now_utc() - last).total_seconds() >= hours * 3600 and str(doc["_id"]) not in REVIEWS_RUNNING:
+            asyncio.create_task(auto_review(doc))
+
+
+async def auto_review(doc: dict) -> None:
+    try:
+        review = await review_session(doc, "automatico")
+        await notify("ricontrollo", doc["instrument"], review_text(doc, review))
+    except HTTPException as e:
+        print(f"[ricontrollo] sessione {doc.get('n')}: {e.detail}", flush=True)
+        # Si riprova al giro successivo dell'intervallo, non a ogni ciclo
+        await db.sessions.update_one({"_id": doc["_id"]}, {"$set": {"last_review_at": now_utc()}})
+    except Exception as e:
+        print(f"[ricontrollo] errore inatteso: {e!r}", flush=True)
+        await db.sessions.update_one({"_id": doc["_id"]}, {"$set": {"last_review_at": now_utc()}})
+
+
+@api.post("/sessions/{session_id}/review")
+async def review_session_route(session_id: str, user: dict = Depends(get_current_user)):
+    doc = await find_session(session_id)
+    if doc["status"] != "attesa":
+        raise HTTPException(status_code=409, detail="Si ricontrolla solo un ordine in attesa di esecuzione")
+    await review_session(doc, "manuale")
+    return session_out(await find_session(session_id))
 
 
 async def find_session(session_id: str) -> dict:
@@ -1216,6 +1360,10 @@ def instrument_label(inst: str) -> str:
 
 async def monitor_loop() -> None:
     while True:
+        try:
+            await auto_reviews()
+        except Exception as e:  # il ciclo non deve mai fermarsi
+            print(f"[ricontrollo] errore inatteso: {e!r}", flush=True)
         if okx_account_configured():
             try:
                 await check_positions()

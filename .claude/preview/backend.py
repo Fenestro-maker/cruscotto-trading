@@ -63,8 +63,19 @@ async def fake_okx_public(path: str, params: dict) -> list:
     return []
 
 
-async def fake_ask_claude(system: str, user_text: str):
+async def fake_ask_claude(system: str, user_text: str, schema=None):
     last = float(fake_series("15m")[0][4])
+    if schema is server.REVIEW_SCHEMA:
+        return {
+            "verdict": "modifica",
+            "summary": "[RICONTROLLO DI PROVA, non generato da Claude] La tesi regge ma il prezzo ha formato un nuovo minimo: zona di ingresso più bassa.",
+            "changes": [f"Nuovo minimo 1h a {last - 15:.0f}", "RSI giornaliero sceso da 45 a 41", "Resistenza del range invariata"],
+            "score": 5,
+            "score_for": ["Settimanale ancora rialzista", f"Supporto giornaliero intatto a {last - 60:.0f}"],
+            "score_against": ["Struttura 1h indebolita", "Volumi in calo"],
+            "entry": round(last - 20, 1), "stop": round(last - 42, 1), "tp1": round(last + 15, 1), "target": round(last + 30, 1),
+            "cancel_above": None, "cancel_below": round(last - 43, 1),
+        }, {"model": "simulato", "input_tokens": 0, "output_tokens": 0}
     entry = round(last - 8, 1)
     return {
         "decision": "trade",

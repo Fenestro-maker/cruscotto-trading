@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const [leverage, setLeverage] = useState('');
   const [instruments, setInstruments] = useState('');
   const [profitAlert, setProfitAlert] = useState('');
+  const [reviewHours, setReviewHours] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -23,6 +24,7 @@ export default function SettingsPage() {
     setLeverage(String(s.leverage));
     setInstruments(s.instruments.join('\n'));
     setProfitAlert(String(s.profit_alert_usd));
+    setReviewHours(String(s.review_every_hours));
   };
 
   useEffect(() => {
@@ -41,6 +43,7 @@ export default function SettingsPage() {
         leverage: parseFloat(leverage.replace(',', '.')),
         instruments: instruments.split(/[\s,]+/).filter(Boolean),
         profit_alert_usd: parseFloat(profitAlert.replace(',', '.')),
+        review_every_hours: parseFloat(reviewHours.replace(',', '.')),
       });
       fill(data);
       setSaved(true);
@@ -72,6 +75,9 @@ export default function SettingsPage() {
           </Field>
           <Field label="Notifica di guadagno ($)" hint="Telegram ti avvisa quando una posizione aperta guadagna almeno questa cifra">
             <Input inputMode="decimal" className="num" value={profitAlert} onChange={(e) => setProfitAlert(e.target.value)} />
+          </Field>
+          <Field label="Ricontrollo automatico dei piani in attesa (ore)" hint="Ogni quante ore Claude ricontrolla un ordine non ancora eseguito e ti manda il verdetto su Telegram. 0 = spento">
+            <Input inputMode="decimal" className="num" value={reviewHours} onChange={(e) => setReviewHours(e.target.value)} />
           </Field>
           {error && <Alert tone="error">{error}</Alert>}
           {saved && <Alert tone="ok">Impostazioni salvate</Alert>}
