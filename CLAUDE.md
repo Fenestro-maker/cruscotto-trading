@@ -26,7 +26,10 @@ Il titolare non è uno sviluppatore: rispondi in **italiano**, spiega in modo se
 cd frontend && npm run build      # tsc -b && vite build
 cd frontend && npx eslint src
 backend/venv/bin/python -c "import ast; ast.parse(open('backend/server.py').read())"
+backend/venv/bin/python .claude/preview/smoke_test.py   # chiama le rotte /api come il sito: deve finire con "Tutte le rotte rispondono correttamente"
 ```
+
+Le prove che chiamano direttamente le funzioni Python non bastano: un decoratore `@api...` finito sopra la funzione sbagliata (successo con `/analysis`) si vede solo chiamando le rotte. Se aggiungi una rotta, aggiungila a `smoke_test.py`.
 
 Le dipendenze le installa `.claude/hooks/session-start.sh`. Se cambi le dipendenze del frontend, aggiorna e committa `frontend/package-lock.json`.
 

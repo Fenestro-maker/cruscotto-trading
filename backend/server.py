@@ -800,7 +800,6 @@ class AnalysisIn(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
-@api.post("/analysis")
 async def market_context(inst: str) -> tuple[dict, list[str], list[str]]:
     """Prezzo attuale e candele di tutti i timeframe, già in testo per Claude"""
     ticker, *series = await asyncio.gather(
@@ -819,6 +818,7 @@ async def market_context(inst: str) -> tuple[dict, list[str], list[str]]:
     return ticker, header, blocks
 
 
+@api.post("/analysis")
 async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user)):
     daily = await daily_status()
     if daily["stopped"]:
@@ -870,6 +870,15 @@ def analysis_out(doc: dict) -> dict:
 async def list_analyses(limit: int = 20, user: dict = Depends(get_current_user)):
     docs = await db.analyses.find().sort("created_at", -1).to_list(min(limit, 100))
     return [analysis_out(d) for d in docs]
+
+
+@api.post("/analysis/{analysis_id}/dismiss")
+async def dismiss_analysis(analysis_id: str, user: dict = Depends(get_current_user)):
+    """Nasconde un'analisi dalla pagina Sessione (resta salvata)"""
+    res = await db.analyses.update_one({"_id": oid(analysis_id)}, {"$set": {"dismissed": True}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Analisi non trovata")
+    return {"ok": True}
 
 
 @api.get("/analysis/{analysis_id}")
@@ -995,6 +1004,9 @@ async def create_session(data: SessionIn, user: dict = Depends(get_current_user)
         doc["closed_at"] = doc["created_at"]
     res = await db.sessions.insert_one(doc)
     doc["_id"] = res.inserted_id
+    if data.analysis_id and ObjectId.is_valid(data.analysis_id):
+        # L'analisi usata per una sessione non si ripropone più nella pagina
+        await db.analyses.update_one({"_id": ObjectId(data.analysis_id)}, {"$set": {"used": True}})
     return session_out(doc)
 
 

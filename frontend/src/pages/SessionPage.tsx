@@ -109,7 +109,8 @@ export default function SessionPage() {
   }, [activeInst]);
   const sessionPrice = viewingActive ? ticker?.last ?? null : activeTicker?.last ?? null;
 
-  const latest = analyses.find((a) => a.instrument === shownInst) ?? null;
+  // Analisi da proporre: la più recente dello strumento, se non è già stata usata o nascosta
+  const latest = analyses.find((a) => a.instrument === shownInst && !a.used && !a.dismissed) ?? null;
   const draft = form ? planFromForm(form, shownInst) : null;
   const problems = draft && settings ? planProblems(draft, settings.rules.min_rr) : [];
 
@@ -203,6 +204,7 @@ export default function SessionPage() {
               analysis={latest}
               onUsePlan={() => { setEditingId(null); setForm(formFromAnalysis(latest)); }}
               onNoTrade={() => recordNoTrade(latest)}
+              onDismiss={() => act(() => analysisApi.dismiss(latest.id))}
             />
           )}
         </div>
