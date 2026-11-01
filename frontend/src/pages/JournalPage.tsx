@@ -86,6 +86,39 @@ function SessionRow({ s, onSaveNote, onDelete }: { s: Session; onSaveNote: (note
   );
 }
 
+function ScanComparison({ data }: { data: Stats['scan_vs_analysis'] }) {
+  return (
+    <Card title="Classifica e «Ragiona ora» a confronto">
+      {data.count === 0 ? (
+        <p className="text-sm text-slate-500">
+          Quando fai «Ragiona ora» su uno strumento della classifica del giorno, qui confronto i due voti.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <Stat label="Confronti" value={data.count} />
+            <Stat label="Differenza media" value={`${data.avg_diff! > 0 ? '+' : ''}${fmtNum(data.avg_diff, 1)}`} tone={data.avg_diff! < 0 ? 'down' : undefined} />
+            <Stat label="Scarti di 3+ punti" value={data.big_gaps} />
+          </div>
+          <p className="text-xs text-slate-500">
+            Differenza negativa: «Ragiona ora» dà voti più bassi della classifica. Scarto medio in valore assoluto {fmtNum(data.avg_abs_diff, 1)} punti.
+          </p>
+          <ul className="space-y-1 text-xs">
+            {data.recent.map((p, i) => (
+              <li key={i} className="flex flex-wrap gap-2 text-slate-300">
+                <span className="num text-slate-500">{fmtDateTime(p.created_at)}</span>
+                <span>{instLabel(p.instrument)}</span>
+                <span className="num">classifica {p.scan_score} → analisi {p.analysis_score}</span>
+                {p.analysis_decision === 'no_trade' && <span className="text-slate-500">(nessun trade)</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function JournalPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -161,6 +194,7 @@ export default function JournalPage() {
           <GroupTable title="Per strumento" rows={stats.by_instrument} label={instLabel} />
           <GroupTable title="Per setup" rows={stats.by_setup} label={(k) => SETUP_LABELS[k as SetupKey] ?? k} />
           <GroupTable title="Per voto di fattibilità" rows={stats.by_score} label={(k) => (k === '-' ? 'Senza voto' : `Voto ${k}`)} />
+          <ScanComparison data={stats.scan_vs_analysis} />
         </div>
       )}
 

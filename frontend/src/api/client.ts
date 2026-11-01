@@ -146,6 +146,7 @@ export interface Analysis {
   rr: number | null;
   plan_issues: string[];
   usage: { model: string; input_tokens: number; output_tokens: number };
+  scan_ref?: { created_at: string; score: number; direction: 'long' | 'short' | 'none'; setup: SetupKey } | null; // voto in classifica oggi
   used?: boolean;      // già usata per creare una sessione
   dismissed?: boolean; // nascosta dalla pagina Sessione
 }
@@ -244,6 +245,16 @@ export interface Stats {
   by_instrument: StatsGroup[];
   by_setup: StatsGroup[];
   by_score: StatsGroup[];
+  scan_vs_analysis: {
+    count: number;
+    avg_diff: number | null;      // negativo = «Ragiona ora» più severo della classifica
+    avg_abs_diff: number | null;
+    big_gaps: number;             // differenze di 3 punti o più
+    recent: Array<{
+      instrument: string; created_at: string; scan_score: number; scan_direction: string;
+      analysis_score: number; analysis_decision: 'trade' | 'no_trade'; analysis_side: string;
+    }>;
+  };
 }
 
 // Conto OKX in sola lettura

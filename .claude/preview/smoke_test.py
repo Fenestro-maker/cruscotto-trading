@@ -80,6 +80,14 @@ with TestClient(server.app) as c:
     if scan.get("status") != "ok" or not scan["items"]:
         failures.append(f"classifica vuota o non riuscita: {scan.get('error')}")
     check("ultima classifica", c.get("/api/scans/latest"), key="scan")
+    if scan.get("items"):
+        picked = scan["items"][0]["instrument"]
+        linked = check("analisi su uno strumento in classifica", c.post("/api/analysis", json={"instrument": picked, "note": ""}), key="scan_ref").json()
+        if not linked.get("scan_ref") or linked["scan_ref"]["score"] != scan["items"][0]["score"]:
+            failures.append(f"voto della classifica non collegato all'analisi: {linked.get('scan_ref')}")
+        cmp = check("confronto nel diario", c.get("/api/stats"), key="scan_vs_analysis").json()["scan_vs_analysis"]
+        if cmp["count"] < 1:
+            failures.append("confronto classifica/analisi vuoto")
     check("conto OKX", c.get("/api/account"), key="configured")
     check("notifiche", c.get("/api/notifications"))
 

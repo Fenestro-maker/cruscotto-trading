@@ -81,6 +81,16 @@ export default function AnalysisCard({ analysis, onUsePlan, onNoTrade, onDismiss
                 <div className="text-xs text-slate-500">più conferme convergono, più il voto è alto</div>
               </div>
             </div>
+            {analysis.scan_ref && (
+              <p className="mt-2 text-xs text-slate-400">
+                In classifica alle {fmtDateTime(analysis.scan_ref.created_at).slice(-5)}:{' '}
+                <span className="num font-medium text-slate-200">{analysis.scan_ref.score}/10</span>
+                {analysis.scan_ref.direction !== 'none' && ` ${analysis.scan_ref.direction.toUpperCase()}`}
+                {Math.abs(r.score - analysis.scan_ref.score) >= 3 && (
+                  <span className="text-amber-300"> · differenza ampia: la classifica è una lettura veloce, conta questa analisi</span>
+                )}
+              </p>
+            )}
             {(r.score_for?.length || r.score_against?.length) ? (
               <ul className="mt-3 space-y-1 text-sm">
                 {r.score_for?.map((t, i) => (
