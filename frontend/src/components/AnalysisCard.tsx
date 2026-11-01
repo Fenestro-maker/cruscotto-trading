@@ -50,8 +50,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-export default function AnalysisCard({ analysis, onUsePlan, onNoTrade }: {
-  analysis: Analysis; onUsePlan: () => void; onNoTrade: () => void;
+export default function AnalysisCard({ analysis, onUsePlan, onNoTrade, onDismiss }: {
+  analysis: Analysis; onUsePlan: () => void; onNoTrade: () => void; onDismiss: () => void;
 }) {
   const r = analysis.result;
   const isTrade = r.decision === 'trade';
@@ -155,6 +155,7 @@ export default function AnalysisCard({ analysis, onUsePlan, onNoTrade }: {
           ) : (
             <Button onClick={onNoTrade} variant="secondary">Registra «nessun trade»</Button>
           )}
+          <Button onClick={onDismiss} variant="ghost">Nascondi</Button>
         </div>
         <p className="text-xs text-slate-600">
           {analysis.usage.model} · {analysis.usage.input_tokens.toLocaleString('it-IT')} token in ingresso, {analysis.usage.output_tokens.toLocaleString('it-IT')} in uscita

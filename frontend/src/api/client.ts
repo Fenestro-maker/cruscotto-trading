@@ -144,6 +144,8 @@ export interface Analysis {
   rr: number | null;
   plan_issues: string[];
   usage: { model: string; input_tokens: number; output_tokens: number };
+  used?: boolean;      // già usata per creare una sessione
+  dismissed?: boolean; // nascosta dalla pagina Sessione
 }
 
 export type SessionStatus = 'attesa' | 'aperta' | 'chiusa' | 'annullata' | 'notrade';
@@ -360,6 +362,7 @@ export const analysisApi = {
   run: (instrument: string, note: string) => api.post<Analysis>('/analysis', { instrument, note }, { timeout: 600_000 }),
   list: () => api.get<Analysis[]>('/analysis'),
   get: (id: string) => api.get<Analysis>(`/analysis/${id}`),
+  dismiss: (id: string) => api.post(`/analysis/${id}/dismiss`),
 };
 
 export const sessionsApi = {
