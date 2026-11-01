@@ -62,12 +62,20 @@ export default function SessionPage() {
       setSettings(data);
       setInst((cur) => (data.instruments.includes(cur) ? cur : data.instruments[0]));
     }).catch((err) => setError(errorMessage(err)));
-    fetchAll().then(apply).catch((err) => setError(errorMessage(err)));
+    fetchAll().then((data) => {
+      apply(data);
+      // All'apertura si mostra lo strumento della sessione in corso, se c'è
+      const running = data.sessions.find((s) => s.status === 'attesa' || s.status === 'aperta');
+      if (running) setInst(running.instrument);
+    }).catch((err) => setError(errorMessage(err)));
   }, [apply]);
 
   const active = sessions.find((s) => s.status === 'attesa' || s.status === 'aperta') ?? null;
-  // La sessione in corso decide lo strumento mostrato
-  const shownInst = active?.instrument ?? inst;
+  const shownInst = inst;
+  // Si possono guardare altri strumenti anche con una sessione in corso
+  const viewingActive = !!active && active.instrument === shownInst;
+  const [activeTicker, setActiveTicker] = useState<Ticker | null>(null);
+  const activeInst = active && !viewingActive ? active.instrument : null;
 
   useEffect(() => {
     if (!shownInst) return;
@@ -85,12 +93,26 @@ export default function SessionPage() {
     return () => { stopped = true; clearInterval(id); setTicker(null); };
   }, [shownInst]);
 
+  // Prezzo dello strumento della sessione quando si sta guardando un altro grafico
+  useEffect(() => {
+    if (!activeInst) return;
+    let stopped = false;
+    const load = () => {
+      if (document.hidden) return;
+      marketApi.ticker(activeInst).then(({ data }) => !stopped && setActiveTicker(data)).catch(() => undefined);
+    };
+    load();
+    const id = setInterval(load, PRICE_REFRESH_MS);
+    return () => { stopped = true; clearInterval(id); setActiveTicker(null); };
+  }, [activeInst]);
+  const sessionPrice = viewingActive ? ticker?.last ?? null : activeTicker?.last ?? null;
+
   const latest = analyses.find((a) => a.instrument === shownInst) ?? null;
   const draft = form ? planFromForm(form, shownInst) : null;
   const problems = draft && settings ? planProblems(draft, settings.rules.min_rr) : [];
 
   const levels = draft ? levelsOf(draft)
-    : active ? levelsOf(active)
+    : viewingActive && active ? levelsOf(active)
       : latest?.result.decision === 'trade' ? levelsOf(latest.result) : [];
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -152,7 +174,6 @@ export default function SessionPage() {
           <Select
             aria-label="Strumento"
             value={shownInst}
-            disabled={!!active}
             onChange={(e) => { setInst(e.target.value); setForm(null); }}
           >
             {settings.instruments.map((i) => <option key={i} value={i}>{instLabel(i)}</option>)}
@@ -174,7 +195,7 @@ export default function SessionPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-4">
           <Card><PriceChart inst={shownInst} lastPrice={ticker?.last ?? null} levels={levels} /></Card>
-          {!active && latest && (
+          {!viewingActive && latest && (
             <AnalysisCard
               analysis={latest}
               onUsePlan={() => { setEditingId(null); setForm(formFromAnalysis(latest)); }}
@@ -184,19 +205,25 @@ export default function SessionPage() {
         </div>
 
         <div className="space-y-4">
+          {active && !form && !viewingActive && (
+            <Alert tone="info">
+              Sessione in corso su {instLabel(active.instrument)}.{' '}
+              <button className="underline" onClick={() => setInst(active.instrument)}>Mostra il suo grafico</button>
+            </Alert>
+          )}
           {active && !form && (
             <ActiveSession
               session={active}
-              price={ticker?.last ?? null}
+              price={sessionPrice}
               busy={busy}
               onFill={() => act(() => sessionsApi.fill(active.id))}
               onCancel={(reason) => act(() => sessionsApi.cancel(active.id, reason))}
               onClose={(outcome: Outcome, exitPrice?: number, tp1Taken?: boolean) =>
                 act(() => sessionsApi.close(active.id, { outcome, exit_price: exitPrice, tp1_taken: tp1Taken }))}
-              onEdit={() => { setEditingId(active.id); setForm(formFromPlan(active)); }}
+              onEdit={() => { setInst(active.instrument); setEditingId(active.id); setForm(formFromPlan(active)); }}
             />
           )}
-          {!active && !form && (
+          {!viewingActive && !form && (
             <>
               <ReasonPanel
                 busy={reasoning}
@@ -204,10 +231,12 @@ export default function SessionPage() {
                 disabled={stoppedToday || !settings.ai_configured}
                 disabledReason={stoppedToday ? daily?.message : 'Manca ANTHROPIC_API_KEY nel file .env del server.'}
               />
-              <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => { setEditingId(null); setForm(EMPTY_FORM); }} disabled={stoppedToday}>Piano manuale</Button>
-                <Button variant="ghost" onClick={() => recordNoTrade(null)} disabled={busy}>Nessun trade oggi</Button>
-              </div>
+              {!active && (
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={() => { setEditingId(null); setForm(EMPTY_FORM); }} disabled={stoppedToday}>Piano manuale</Button>
+                  <Button variant="ghost" onClick={() => recordNoTrade(null)} disabled={busy}>Nessun trade oggi</Button>
+                </div>
+              )}
             </>
           )}
           {form && (
@@ -221,7 +250,7 @@ export default function SessionPage() {
               onCancel={() => { setForm(null); setEditingId(null); }}
             />
           )}
-          <RiskPanel plan={draft ?? active} settings={settings} daily={daily} info={info} />
+          <RiskPanel plan={draft ?? (viewingActive ? active : null)} settings={settings} daily={daily} info={info} />
           <AccountPanel inst={shownInst} session={active} />
         </div>
       </div>
