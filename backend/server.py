@@ -852,6 +852,17 @@ async def market_context(inst: str) -> tuple[dict, list[str], list[str]]:
     return ticker, header, blocks
 
 
+async def scan_reference(inst: str) -> Optional[dict]:
+    """Voto che lo strumento aveva nell'ultima classifica di oggi (per confrontarlo con l'analisi completa)"""
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    scan = await db.scans.find_one({"date": today, "status": "ok", "items.instrument": inst}, sort=[("created_at", -1)])
+    if not scan:
+        return None
+    item = next(i for i in scan["items"] if i["instrument"] == inst)
+    return {"scan_id": str(scan["_id"]), "created_at": iso(scan["created_at"]), "score": item["score"],
+            "direction": item["direction"], "setup": item["setup"]}
+
+
 @api.post("/analysis")
 async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user)):
     daily = await daily_status()
@@ -887,6 +898,7 @@ async def run_analysis(data: AnalysisIn, user: dict = Depends(get_current_user))
         "rr": rr_of(result["entry"], result["stop"], result["target"]),
         "plan_issues": plan_issues,
         "usage": usage,
+        "scan_ref": await scan_reference(inst),
     }
     res = await db.analyses.insert_one(doc)
     doc["_id"] = res.inserted_id
@@ -1339,7 +1351,23 @@ async def stats(user: dict = Depends(get_current_user)):
         return "8-10" if score >= 8 else "6-7" if score >= 6 else "1-5"
 
     by_score = sorted(grouped(score_band), key=lambda g: g["key"], reverse=True)
-    return {"overall": summarize(docs), "by_instrument": grouped("instrument"), "by_setup": grouped("setup"), "by_score": by_score}
+    pairs = [a async for a in db.analyses.find({"scan_ref": {"$ne": None}, "result.score": {"$exists": True}}).sort("created_at", -1)]
+    pairs = [a for a in pairs if a.get("scan_ref")]
+    diffs = [a["result"]["score"] - a["scan_ref"]["score"] for a in pairs]
+    scan_vs_analysis = {
+        "count": len(pairs),
+        "avg_diff": round(sum(diffs) / len(diffs), 2) if diffs else None,       # negativo = l'analisi completa è più severa
+        "avg_abs_diff": round(sum(abs(x) for x in diffs) / len(diffs), 2) if diffs else None,
+        "big_gaps": sum(1 for x in diffs if abs(x) >= 3),
+        "recent": [
+            {"instrument": a["instrument"], "created_at": iso(a["created_at"]), "scan_score": a["scan_ref"]["score"],
+             "scan_direction": a["scan_ref"]["direction"], "analysis_score": a["result"]["score"],
+             "analysis_decision": a["result"]["decision"], "analysis_side": a["result"]["side"]}
+            for a in pairs[:10]
+        ],
+    }
+    return {"overall": summarize(docs), "by_instrument": grouped("instrument"), "by_setup": grouped("setup"), "by_score": by_score,
+            "scan_vs_analysis": scan_vs_analysis}
 
 
 EXPORT_FIELDS = [
@@ -1590,6 +1618,7 @@ SCAN_TO_AI = 12          # migliori del filtro tecnico che legge Claude
 SCAN_TELEGRAM_TOP = 5
 SCAN_CANDLES = {"1D": 120, "4H": 120, "1H": 100}
 SCAN_AI_CANDLES = {"1D": 60, "4H": 60, "1H": 48}
+SCAN_WEEKLY = 52  # settimanale (un anno) solo per i candidati che legge Claude
 SCANS_RUNNING: set[str] = set()
 SCAN_TASKS: set[asyncio.Task] = set()
 
@@ -1676,7 +1705,7 @@ Per ogni candidato:
 - score 1-10: fattibilità di un trade OGGI secondo il metodo. Conta le conferme indipendenti che convergono (trend dei timeframe, livello chiave vicino, spazio fino al target, momentum, funding e open interest come contesto). Scala: 1-3 nessun vantaggio, 4-5 debole, 6-7 discreto, 8-9 forte, 10 raro. Non gonfiare: è normale che la maggior parte prenda 5 o meno.
 - direction long/short (none se non c'è un'idea), setup, level: il prezzo da guardare per l'ingresso (null se none).
 - note: una frase, con i prezzi, su cosa aspettare.
-Il punteggio del filtro automatico è solo indicativo: giudica tu dalle candele. In market_note una frase sul contesto generale (es. crypto tutte deboli, dollaro forte).
+Il settimanale decide la direzione di fondo: un'idea contro il settimanale merita un voto basso. Giudica solo dalle candele e dai dati forniti. In market_note una frase sul contesto generale (es. crypto tutte deboli, dollaro forte).
 Scrivi in italiano semplice."""
 
 
@@ -1776,14 +1805,24 @@ async def run_scan(trigger: str) -> dict:
 
         items, market_note, usage = [], "", None
         if top:
-            derivs = await asyncio.gather(*(derivatives_info(c["inst"], c["price"]) for c in top))
+            # Ordine alfabetico: la posizione nell'elenco non deve suggerire una classifica
+            top_sorted = sorted(top, key=lambda c: c["inst"])
+            derivs = await asyncio.gather(*(derivatives_info(c["inst"], c["price"]) for c in top_sorted))
+
+            async def weekly_of(inst: str) -> list[dict]:
+                async with gate:
+                    try:
+                        return await fetch_candles(inst, "1W", SCAN_WEEKLY)
+                    except HTTPException:
+                        return []
+
+            weeklies = await asyncio.gather(*(weekly_of(c["inst"]) for c in top_sorted))
             parts = [f"Ora: {rome.strftime('%A %d/%m/%Y %H:%M')} (ora italiana)." + (" Weekend: solo crypto." if weekend else "")]
-            for c, d in zip(top, derivs):
-                t = c["tech"]
-                parts.append(
-                    f"# {c['inst']}\nPrezzo {fmt_price(c['price'])} · filtro automatico {t['score']}/100: direzione {t['direction']}, "
-                    f"livello {fmt_price(t['level'])} a {t['dist_atr']} ATR(4h), target {fmt_price(t['target'])}, R:R stimato {t['rr']}, RSI 1h {t['rsi_1h']}"
-                )
+            for c, d, w in zip(top_sorted, derivs, weeklies):
+                # Solo dati di mercato: il punteggio del filtro automatico non va a Claude per non condizionarlo
+                parts.append(f"# {c['inst']}\nPrezzo {fmt_price(c['price'])}")
+                if w:
+                    parts.append(candles_block("1W", w))
                 for (tf, n), series in zip(SCAN_AI_CANDLES.items(), c["series"]):
                     parts.append(candles_block(tf, series[-n:]))
                 parts.append(derivatives_block(d))
