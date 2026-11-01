@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, Loader2, RefreshCw, X } from 'lucide-react';
+import { errorMessage } from '@/api/client';
 import type { ReviewResult, Session, SessionReview } from '@/api/client';
 import { cn, fmtDateTime, fmtPrice } from '@/lib/format';
 import { Alert, Button, Card } from './ui';
@@ -76,6 +77,7 @@ export default function ReviewPanel({ session, reviewEveryHours, aiConfigured, b
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [showAll, setShowAll] = useState(false);
+  const [error, setError] = useState('');
   const reviews = session.reviews ?? [];
   const last = reviews[reviews.length - 1];
   const next = nextAutoReview(session, reviewEveryHours);
@@ -89,7 +91,14 @@ export default function ReviewPanel({ session, reviewEveryHours, aiConfigured, b
 
   const run = async () => {
     setRunning(true);
-    try { await onReview(); } finally { setRunning(false); }
+    setError('');
+    try {
+      await onReview();
+    } catch (err) {
+      setError(errorMessage(err, 'Ricontrollo non riuscito'));
+    } finally {
+      setRunning(false);
+    }
   };
 
   return (
@@ -101,6 +110,7 @@ export default function ReviewPanel({ session, reviewEveryHours, aiConfigured, b
         {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
         {running ? `Claude sta ricontrollando… ${elapsed}s` : 'Ricontrolla lo scenario'}
       </Button>
+      {error && <div className="mt-3"><Alert tone="error">{error}</Alert></div>}
       <p className="mt-2 text-xs text-slate-500">
         {next
           ? `Ricontrollo automatico ogni ${reviewEveryHours} ore, con notifica su Telegram: il prossimo verso il ${next}.`
