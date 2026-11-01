@@ -9,6 +9,7 @@ import base64
 import csv
 import hashlib
 import hmac
+import html
 import io
 import json
 import os
@@ -902,6 +903,9 @@ REVIEW_SCHEMA = {
 
 # Ricontrolli in corso (per non lanciarne due insieme sulla stessa sessione)
 REVIEWS_RUNNING: set[str] = set()
+# Riferimenti ai ricontrolli automatici avviati: senza, Python può chiudere un task a metà
+REVIEW_TASKS: set[asyncio.Task] = set()
+REVIEW_RETRY_H = 1  # dopo un ricontrollo automatico fallito si riprova dopo un'ora
 
 
 async def review_session(doc: dict, trigger: str) -> dict:
@@ -955,8 +959,8 @@ def review_text(doc: dict, review: dict) -> str:
     r = review["result"]
     lines = [f"🔄 <b>Ricontrollo sessione {doc['n']}</b> · {instrument_label(doc['instrument'])}",
              f"{VERDICT_ICONS[r['verdict']]} · voto {r['score']}/10 · prezzo {fmt_price(review['price'])}",
-             r["summary"]]
-    lines += [f"• {c}" for c in r["changes"][:4]]
+             html.escape(r["summary"])]
+    lines += [f"• {html.escape(c)}" for c in r["changes"][:4]]
     if r["verdict"] == "modifica" and r["entry"] is not None:
         lines.append(f"Nuovi livelli: ingresso {fmt_price(r['entry'])} · stop {fmt_price(r['stop'])} · "
                      f"TP1 {fmt_price(r['tp1'])} · target {fmt_price(r['target'])}")
@@ -973,20 +977,22 @@ async def auto_reviews() -> None:
         last = doc.get("last_review_at") or doc["created_at"]
         last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
         if (now_utc() - last).total_seconds() >= hours * 3600 and str(doc["_id"]) not in REVIEWS_RUNNING:
-            asyncio.create_task(auto_review(doc))
+            task = asyncio.create_task(auto_review(doc, hours))
+            REVIEW_TASKS.add(task)
+            task.add_done_callback(REVIEW_TASKS.discard)
 
 
-async def auto_review(doc: dict) -> None:
+async def auto_review(doc: dict, hours: float) -> None:
     try:
         review = await review_session(doc, "automatico")
-        await notify("ricontrollo", doc["instrument"], review_text(doc, review))
-    except HTTPException as e:
-        print(f"[ricontrollo] sessione {doc.get('n')}: {e.detail}", flush=True)
-        # Si riprova al giro successivo dell'intervallo, non a ogni ciclo
-        await db.sessions.update_one({"_id": doc["_id"]}, {"$set": {"last_review_at": now_utc()}})
     except Exception as e:
-        print(f"[ricontrollo] errore inatteso: {e!r}", flush=True)
-        await db.sessions.update_one({"_id": doc["_id"]}, {"$set": {"last_review_at": now_utc()}})
+        detail = e.detail if isinstance(e, HTTPException) else repr(e)
+        print(f"[ricontrollo] sessione {doc.get('n')} non riuscito: {detail}", flush=True)
+        # Nuovo tentativo dopo un'ora (non a ogni ciclo, non dopo un giorno intero)
+        retry_from = now_utc() - timedelta(hours=max(hours - REVIEW_RETRY_H, 0))
+        await db.sessions.update_one({"_id": doc["_id"]}, {"$set": {"last_review_at": retry_from}})
+        return
+    await notify("ricontrollo", doc["instrument"], review_text(doc, review))
 
 
 @api.post("/sessions/{session_id}/review")

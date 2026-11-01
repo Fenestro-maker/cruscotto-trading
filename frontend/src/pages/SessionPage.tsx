@@ -230,7 +230,7 @@ export default function SessionPage() {
               reviewEveryHours={settings.review_every_hours}
               aiConfigured={settings.ai_configured}
               busy={busy}
-              onReview={() => act(() => sessionsApi.review(active.id))}
+              onReview={async () => { await sessionsApi.review(active.id); await reload(); }}
               onApply={(r) => {
                 setInst(active.instrument);
                 setEditingId(active.id);
