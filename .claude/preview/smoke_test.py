@@ -5,6 +5,7 @@ Va lanciata prima di ogni push: verifica che ogni indirizzo /api risponda con la
 """
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -32,17 +33,17 @@ with TestClient(server.app) as c:
 
     check("impostazioni", c.get("/api/settings"), key="rules")
     check("salva impostazioni", c.put("/api/settings", json={
-        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": [INST], "profit_alert_usd": 40, "review_every_hours": 24,
+        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": [INST], "profit_alert_usd": 40, "review_every_hours": 24, "scan_enabled": False,
     }), key="instruments")
     xperps = check("elenco X-Perp", c.get("/api/market/xperps")).json()
     if INST not in xperps or any("_XPERP-" not in i for i in xperps):
         failures.append(f"elenco X-Perp inatteso: {xperps[:5]}")
     check("salva tutti gli X-Perp", c.put("/api/settings", json={
-        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": xperps, "profit_alert_usd": 40, "review_every_hours": 24,
+        "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": xperps, "profit_alert_usd": 40, "review_every_hours": 24, "scan_enabled": False,
     }), key="instruments")
     check("codice inesistente rifiutato", c.put("/api/settings", json={
         "capital": 1500, "risk_pct": 1, "leverage": 3, "instruments": [INST, "PIPPO-USD_UM_XPERP-310404"],
-        "profit_alert_usd": 40, "review_every_hours": 24,
+        "profit_alert_usd": 40, "review_every_hours": 24, "scan_enabled": False,
     }), status=400)
     check("prezzo", c.get("/api/market/ticker", params={"inst": INST}), key="last")
     check("candele", c.get("/api/market/candles", params={"inst": INST, "tf": "1H"}))
@@ -70,6 +71,15 @@ with TestClient(server.app) as c:
     check("importa", c.post("/api/sessions/import", json=exported), key="skipped")
     other = check("seconda analisi", c.post("/api/analysis", json={"instrument": INST, "note": ""}), key="id").json()
     check("nascondi analisi", c.post(f"/api/analysis/{other['id']}/dismiss"))
+    # All'avvio può partire da sola la classifica automatica del giorno: si aspetta che finisca
+    for _ in range(60):
+        if not c.get("/api/scans/latest").json()["running"]:
+            break
+        time.sleep(1)
+    scan = check("classifica", c.post("/api/scans"), key="items").json()
+    if scan.get("status") != "ok" or not scan["items"]:
+        failures.append(f"classifica vuota o non riuscita: {scan.get('error')}")
+    check("ultima classifica", c.get("/api/scans/latest"), key="scan")
     check("conto OKX", c.get("/api/account"), key="configured")
     check("notifiche", c.get("/api/notifications"))
 

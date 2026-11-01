@@ -44,6 +44,9 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5-5")
 AI_EFFORT = os.environ.get("AI_EFFORT", "high")
+# Classifica del mattino: lettura veloce di molti strumenti con un modello più economico
+SCAN_AI_MODEL = os.environ.get("SCAN_AI_MODEL", "claude-sonnet-5-5")
+SCAN_AI_EFFORT = os.environ.get("SCAN_AI_EFFORT", "medium")
 OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")  # OKX Europa (my.okx.com): https://eea.okx.com
 # Chiave API OKX con il solo permesso "Leggi": serve a mostrare conto, posizioni e ordini
 OKX_API_KEY = os.environ.get("OKX_API_KEY", "")
@@ -82,6 +85,8 @@ DEFAULT_SETTINGS = {
     "instruments": ["ETH-USDC-SWAP", "BTC-USDC-SWAP", "SOL-USDC-SWAP"],
     "profit_alert_usd": 40.0,
     "review_every_hours": 24.0,
+    "scan_enabled": True,
+    "scan_time": "08:30",
 }
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -196,6 +201,8 @@ class SettingsIn(BaseModel):
     instruments: list[str] = Field(min_length=1, max_length=500)
     profit_alert_usd: float = Field(default=40.0, gt=0)
     review_every_hours: float = Field(default=24.0, ge=0, le=168)  # 0 = ricontrollo automatico spento
+    scan_enabled: bool = True
+    scan_time: str = Field(default="08:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")  # ora italiana
 
     @field_validator("instruments")
     @classmethod
@@ -343,17 +350,21 @@ async def market_instrument(inst: str, user: dict = Depends(get_current_user)):
     }
 
 
-_instrument_cache: dict[str, tuple[float, list[str]]] = {}
+_instrument_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
-async def okx_instrument_ids(inst_type: str) -> list[str]:
-    """Tutti i codici OKX di un tipo (SWAP, FUTURES, SPOT), nell'ordine di OKX; tenuti 10 minuti in memoria"""
+async def okx_instruments(inst_type: str) -> list[dict]:
+    """Tutti gli strumenti OKX di un tipo (SWAP, FUTURES, SPOT), nell'ordine di OKX; tenuti 10 minuti in memoria"""
     cached = _instrument_cache.get(inst_type)
     if cached and time.time() - cached[0] < 600:
         return cached[1]
-    ids = [r["instId"] for r in await okx_public("/api/v5/public/instruments", {"instType": inst_type})]
-    _instrument_cache[inst_type] = (time.time(), ids)
-    return ids
+    rows = await okx_public("/api/v5/public/instruments", {"instType": inst_type})
+    _instrument_cache[inst_type] = (time.time(), rows)
+    return rows
+
+
+async def okx_instrument_ids(inst_type: str) -> list[str]:
+    return [r["instId"] for r in await okx_instruments(inst_type)]
 
 
 @api.get("/market/xperps")
@@ -778,16 +789,17 @@ def get_ai() -> AsyncAnthropic:
     return _ai
 
 
-async def ask_claude(system: str, user_text: str, schema: Optional[dict] = None) -> tuple[dict, dict]:
+async def ask_claude(system: str, user_text: str, schema: Optional[dict] = None,
+                     model: str = "", effort: str = "") -> tuple[dict, dict]:
     """Richiesta a Claude con risposta JSON validata dallo schema; restituisce (risposta, uso token)"""
     try:
         async with get_ai().beta.messages.stream(
-            model=AI_MODEL,
+            model=model or AI_MODEL,
             max_tokens=32000,
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
             thinking={"type": "adaptive"},
-            output_config={"effort": AI_EFFORT, "format": {"type": "json_schema", "schema": schema or ANALYSIS_SCHEMA}},
+            output_config={"effort": effort or AI_EFFORT, "format": {"type": "json_schema", "schema": schema or ANALYSIS_SCHEMA}},
             system=system,
             messages=[{"role": "user", "content": user_text}],
         ) as stream:
@@ -1544,6 +1556,7 @@ async def monitor_loop() -> None:
             print(f"[open interest] errore inatteso: {e!r}", flush=True)
         try:
             await auto_reviews()
+            await maybe_daily_scan()
         except Exception as e:  # il ciclo non deve mai fermarsi
             print(f"[ricontrollo] errore inatteso: {e!r}", flush=True)
         if okx_account_configured():
@@ -1569,6 +1582,305 @@ async def list_notifications(user: dict = Depends(get_current_user)):
              "created_at": iso(d["created_at"])} for d in docs]
 
 
+# ---------- Classifica del mattino ----------
+
+SCAN_MAX_LIQUID = 80     # strumenti più scambiati che passano al filtro tecnico
+SCAN_MIN_VOLUME_USD = 50_000
+SCAN_TO_AI = 12          # migliori del filtro tecnico che legge Claude
+SCAN_TELEGRAM_TOP = 5
+SCAN_CANDLES = {"1D": 120, "4H": 120, "1H": 100}
+SCAN_AI_CANDLES = {"1D": 60, "4H": 60, "1H": 48}
+SCANS_RUNNING: set[str] = set()
+SCAN_TASKS: set[asyncio.Task] = set()
+
+
+def atr(candles: list[dict], n: int = 14) -> Optional[float]:
+    trs = [max(c["h"] - c["l"], abs(c["h"] - p["c"]), abs(c["l"] - p["c"])) for p, c in zip(candles, candles[1:])]
+    return sum(trs[-n:]) / n if len(trs) >= n else None
+
+
+def trend_of(candles: list[dict]) -> int:
+    """+1 rialzista (prezzo > SMA20 > SMA50), -1 ribassista, 0 laterale"""
+    closes = [c["c"] for c in candles if c["confirmed"]]
+    s20, s50 = sma(closes, 20), sma(closes, 50)
+    if not closes or s20 is None or s50 is None:
+        return 0
+    if closes[-1] > s20 > s50:
+        return 1
+    if closes[-1] < s20 < s50:
+        return -1
+    return 0
+
+
+def swing_levels(candles: list[dict], k: int = 2) -> list[float]:
+    """Massimi e minimi evidenti (più alti/bassi delle k candele a sinistra e a destra)"""
+    out = []
+    for i in range(k, len(candles) - k):
+        window = candles[i - k:i + k + 1]
+        if candles[i]["h"] == max(c["h"] for c in window):
+            out.append(candles[i]["h"])
+        if candles[i]["l"] == min(c["l"] for c in window):
+            out.append(candles[i]["l"])
+    return out
+
+
+def technical_score(d1: list[dict], h4: list[dict], h1: list[dict]) -> dict:
+    """Punteggio meccanico 0-100: trend allineato, prezzo vicino a un livello, spazio per il target, momentum"""
+    td, t4 = trend_of(d1), trend_of(h4)
+    direction = td or t4
+    atr4 = atr(h4)
+    price = h1[-1]["c"] if h1 else None
+    result = {"direction": "none", "score": 0, "trend_1d": td, "trend_4h": t4, "level": None, "target": None,
+              "rr": None, "dist_atr": None, "rsi_1h": None}
+    if not direction or not atr4 or not price:
+        return result
+    levels = swing_levels(h4[-90:]) + swing_levels(d1[-60:])
+    trend_pts = 30 if td and td == t4 else 15 if td else 10
+    if direction > 0:
+        below, above = [x for x in levels if x < price], [x for x in levels if x > price]
+        level = max(below) if below else None
+        target = min((x for x in above if x > price + 0.5 * atr4), default=None)
+    else:
+        below, above = [x for x in levels if x < price], [x for x in levels if x > price]
+        level = min(above) if above else None
+        target = max((x for x in below if x < price - 0.5 * atr4), default=None)
+    if level is None:
+        return {**result, "direction": "long" if direction > 0 else "short", "score": trend_pts}
+    dist = abs(price - level) / atr4
+    prox_pts = 30 if dist <= 0.5 else 22 if dist <= 1 else 12 if dist <= 2 else 0
+    risk = 0.5 * atr4  # stop mezzo ATR oltre il livello
+    rr = abs(target - level) / risk if target is not None else 3.0  # nessun livello sulla strada: spazio libero
+    rr_pts = 20 if rr >= 3 else 15 if rr >= 2 else 6 if rr >= 1.5 else 0
+    r1 = rsi([c["c"] for c in h1 if c["confirmed"]])
+    if r1 is None:
+        mom_pts = 5
+    elif direction > 0:
+        mom_pts = 10 if 35 <= r1 <= 65 else 0 if r1 > 75 else 5
+    else:
+        mom_pts = 10 if 35 <= r1 <= 65 else 0 if r1 < 25 else 5
+    return {
+        **result, "direction": "long" if direction > 0 else "short",
+        "score": round((trend_pts + prox_pts + rr_pts + mom_pts) / 90 * 100),
+        "level": level, "target": target, "rr": round(rr, 2), "dist_atr": round(dist, 2),
+        "rsi_1h": round(r1, 1) if r1 is not None else None,
+    }
+
+
+SCAN_SYSTEM = f"""Sei l'analista di un trader discrezionale che opera a sessione su OKX (X-Perp, margine isolato), solo price action.
+Ogni mattina ricevi i candidati migliori di un filtro automatico su molti strumenti: devi fare una lettura VELOCE di ciascuno e dire quanto vale la pena studiarlo oggi. Non serve un piano completo: il trader farà poi un'analisi approfondita sullo strumento scelto.
+
+Metodo: settimanale/giornaliero per direzione e zone, 4h/1h per la struttura. Setup ammessi: retest_rottura, pullback_trend, sweep_liquidita, rottura_range, nessuno.
+Regole fisse: R:R minimo {MIN_RR:g}:1, stop in un punto logico, ingresso limit su un livello.
+
+Per ogni candidato:
+- score 1-10: fattibilità di un trade OGGI secondo il metodo. Conta le conferme indipendenti che convergono (trend dei timeframe, livello chiave vicino, spazio fino al target, momentum, funding e open interest come contesto). Scala: 1-3 nessun vantaggio, 4-5 debole, 6-7 discreto, 8-9 forte, 10 raro. Non gonfiare: è normale che la maggior parte prenda 5 o meno.
+- direction long/short (none se non c'è un'idea), setup, level: il prezzo da guardare per l'ingresso (null se none).
+- note: una frase, con i prezzi, su cosa aspettare.
+Il punteggio del filtro automatico è solo indicativo: giudica tu dalle candele. In market_note una frase sul contesto generale (es. crypto tutte deboli, dollaro forte).
+Scrivi in italiano semplice."""
+
+
+def scan_schema(instruments: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "instrument": {"type": "string", "enum": instruments},
+                        "score": {"type": "integer"},
+                        "direction": {"type": "string", "enum": ["long", "short", "none"]},
+                        "setup": {"type": "string", "enum": list(SETUPS)},
+                        "level": NUM_OR_NULL,
+                        "note": {"type": "string"},
+                    },
+                    "required": ["instrument", "score", "direction", "setup", "level", "note"],
+                    "additionalProperties": False,
+                },
+            },
+            "market_note": {"type": "string"},
+        },
+        "required": ["items", "market_note"],
+        "additionalProperties": False,
+    }
+
+
+async def scan_universe(weekend: bool) -> tuple[list[dict], dict]:
+    """Strumenti da analizzare: quelli in impostazioni, liquidi, e nel weekend solo crypto"""
+    insts = [i for i in (await load_settings())["instruments"] if inst_type_of(i) != "SPOT"]
+    stats = {"followed": len(insts), "not_crypto": 0, "illiquid": 0}
+    by_type: dict[str, list[str]] = {}
+    for i in insts:
+        by_type.setdefault(inst_type_of(i), []).append(i)
+    pool = []
+    for inst_type, ids in by_type.items():
+        rows, tickers = await asyncio.gather(okx_instruments(inst_type), okx_public("/api/v5/market/tickers", {"instType": inst_type}))
+        category = {r["instId"]: r.get("instCategory", "") for r in rows}
+        tick = {t["instId"]: t for t in tickers}
+        for i in ids:
+            if weekend and category.get(i) not in ("1", ""):
+                stats["not_crypto"] += 1
+                continue
+            t = tick.get(i)
+            last, vol = fnum(t.get("last")) if t else None, fnum(t.get("volCcy24h")) if t else None
+            volume_usd = (last or 0) * (vol or 0)
+            if volume_usd < SCAN_MIN_VOLUME_USD:
+                stats["illiquid"] += 1
+                continue
+            pool.append({"inst": i, "volume_usd": volume_usd, "category": category.get(i, "")})
+    pool.sort(key=lambda x: -x["volume_usd"])
+    stats["too_many"] = max(0, len(pool) - SCAN_MAX_LIQUID)
+    return pool[:SCAN_MAX_LIQUID], stats
+
+
+async def run_scan(trigger: str) -> dict:
+    """Classifica: filtro tecnico gratuito su tutti gli strumenti, poi lettura veloce di Claude sui migliori"""
+    if "scan" in SCANS_RUNNING:
+        raise HTTPException(status_code=409, detail="Una classifica è già in preparazione: attendi qualche minuto")
+    SCANS_RUNNING.add("scan")
+    started = now_utc()
+    rome = datetime.now(TZ)
+    weekend = rome.weekday() >= 5
+    try:
+        pool, stats = await scan_universe(weekend)
+        gate = asyncio.Semaphore(5)  # OKX: 40 richieste di candele ogni 2 secondi
+
+        async def candles_of(item: dict):
+            async with gate:
+                try:
+                    series = []
+                    for tf, n in SCAN_CANDLES.items():
+                        series.append(await fetch_candles(item["inst"], tf, n))
+                        await asyncio.sleep(0.25)
+                    return item, series
+                except HTTPException:
+                    return item, None
+
+        fetched = await asyncio.gather(*(candles_of(item) for item in pool))
+        candidates, closed = [], 0
+        for item, series in fetched:
+            if not series or not all(series):
+                continue
+            d1, h4, h1 = series
+            if (time.time() * 1000 - h1[-1]["t"]) > 3 * 3600_000:  # nessuna candela 1h recente: mercato chiuso
+                closed += 1
+                continue
+            tech = technical_score(d1, h4, h1)
+            if tech["direction"] != "none":
+                candidates.append({**item, "tech": tech, "series": series, "price": h1[-1]["c"]})
+        candidates.sort(key=lambda c: -c["tech"]["score"])
+        top = candidates[:SCAN_TO_AI]
+        stats.update({"liquid": len(pool), "closed": closed, "analyzed": len(candidates), "to_ai": len(top)})
+
+        items, market_note, usage = [], "", None
+        if top:
+            derivs = await asyncio.gather(*(derivatives_info(c["inst"], c["price"]) for c in top))
+            parts = [f"Ora: {rome.strftime('%A %d/%m/%Y %H:%M')} (ora italiana)." + (" Weekend: solo crypto." if weekend else "")]
+            for c, d in zip(top, derivs):
+                t = c["tech"]
+                parts.append(
+                    f"# {c['inst']}\nPrezzo {fmt_price(c['price'])} · filtro automatico {t['score']}/100: direzione {t['direction']}, "
+                    f"livello {fmt_price(t['level'])} a {t['dist_atr']} ATR(4h), target {fmt_price(t['target'])}, R:R stimato {t['rr']}, RSI 1h {t['rsi_1h']}"
+                )
+                for (tf, n), series in zip(SCAN_AI_CANDLES.items(), c["series"]):
+                    parts.append(candles_block(tf, series[-n:]))
+                parts.append(derivatives_block(d))
+            parts.append("Valuta ogni candidato e restituisci un elemento per ciascuno.")
+            result, usage = await ask_claude(SCAN_SYSTEM, "\n\n".join(parts), scan_schema([c["inst"] for c in top]),
+                                             model=SCAN_AI_MODEL, effort=SCAN_AI_EFFORT)
+            market_note = result["market_note"]
+            tech_of = {c["inst"]: c for c in top}
+            seen = set()
+            for it in result["items"]:
+                if it["instrument"] in seen or it["instrument"] not in tech_of:
+                    continue
+                seen.add(it["instrument"])
+                c = tech_of[it["instrument"]]
+                items.append({**it, "score": max(1, min(10, int(it["score"]))), "price": c["price"],
+                              "tech_score": c["tech"]["score"], "volume_usd": round(c["volume_usd"])})
+            items.sort(key=lambda x: (-x["score"], -x["tech_score"]))
+        doc = {"created_at": started, "date": rome.strftime("%Y-%m-%d"), "trigger": trigger, "weekend": weekend,
+               "status": "ok", "stats": stats, "items": items, "market_note": market_note, "usage": usage,
+               "duration_s": round((now_utc() - started).total_seconds())}
+    except Exception as e:  # anche un errore inatteso viene salvato: così la classifica automatica non riparte a raffica
+        detail = e.detail if isinstance(e, HTTPException) else f"errore inatteso: {e!r}"
+        print(f"[classifica] non riuscita: {detail}", flush=True)
+        doc = {"created_at": started, "date": rome.strftime("%Y-%m-%d"), "trigger": trigger, "weekend": weekend,
+               "status": "errore", "error": str(detail), "items": [], "stats": {}}
+    finally:
+        SCANS_RUNNING.discard("scan")
+    res = await db.scans.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return doc
+
+
+def scan_out(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return None
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["id"] = str(doc["_id"])
+    out["created_at"] = iso(doc["created_at"])
+    return out
+
+
+def scan_text(doc: dict) -> str:
+    when = doc["created_at"].astimezone(TZ) if doc["created_at"].tzinfo else doc["created_at"].replace(tzinfo=timezone.utc).astimezone(TZ)
+    head = f"🌅 <b>Classifica del mattino</b> · {when.strftime('%d/%m %H:%M')}" + (" · weekend, solo crypto" if doc.get("weekend") else "")
+    if doc["status"] != "ok":
+        return f"{head}\nNon riuscita: {html.escape(doc.get('error', ''))}"
+    lines = [head]
+    if doc.get("market_note"):
+        lines.append(html.escape(doc["market_note"]))
+    best = [i for i in doc["items"] if i["direction"] != "none"][:SCAN_TELEGRAM_TOP]
+    if not best:
+        lines.append("Nessun candidato interessante oggi: «nessun trade» è una scelta valida.")
+    for n, it in enumerate(best, 1):
+        level = f" · livello {fmt_price(it['level'])}" if it.get("level") is not None else ""
+        lines.append(f"\n{n}. <b>{instrument_label(it['instrument'])}</b> · {it['score']}/10 · {it['direction'].upper()} · "
+                     f"{SETUPS.get(it['setup'], it['setup'])}{level}\n{html.escape(it['note'])}")
+    st = doc.get("stats", {})
+    lines.append(f"\nAnalizzati {st.get('analyzed', 0)} strumenti, letti da Claude {st.get('to_ai', 0)}. Approfondisci con «Ragiona ora».")
+    return "\n".join(lines)
+
+
+async def maybe_daily_scan() -> None:
+    """Classifica automatica una volta al giorno all'ora delle impostazioni (ora italiana)"""
+    settings = await load_settings()
+    if not settings.get("scan_enabled") or not ANTHROPIC_API_KEY or "scan" in SCANS_RUNNING:
+        return
+    now = datetime.now(TZ)
+    if now.strftime("%H:%M") < settings.get("scan_time", "08:30"):
+        return
+    if await db.scans.find_one({"date": now.strftime("%Y-%m-%d"), "trigger": "automatico"}):
+        return
+    task = asyncio.create_task(auto_scan())
+    SCAN_TASKS.add(task)
+    task.add_done_callback(SCAN_TASKS.discard)
+
+
+async def auto_scan() -> None:
+    try:
+        doc = await run_scan("automatico")
+    except Exception as e:  # non deve mai fermare il ciclo
+        print(f"[classifica] errore inatteso: {e!r}", flush=True)
+        return
+    await notify("classifica", "", scan_text(doc))
+
+
+@api.post("/scans")
+async def scan_now(user: dict = Depends(get_current_user)):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="Manca ANTHROPIC_API_KEY in backend/.env")
+    return scan_out(await run_scan("manuale"))
+
+
+@api.get("/scans/latest")
+async def latest_scan(user: dict = Depends(get_current_user)):
+    return {"scan": scan_out(await db.scans.find_one(sort=[("created_at", -1)])), "running": "scan" in SCANS_RUNNING}
+
+
 app.include_router(api)
 
 
@@ -1578,6 +1890,7 @@ async def create_indexes():
     await db.sessions.create_index("created_at")
     await db.analyses.create_index("created_at")
     await db.notifications.create_index("created_at")
+    await db.scans.create_index("created_at")
     await db.oi_snapshots.create_index([("inst", 1), ("ts", -1)])
     await db.oi_snapshots.create_index("ts", expireAfterSeconds=8 * 86400)
     app.state.monitor = asyncio.create_task(monitor_loop())

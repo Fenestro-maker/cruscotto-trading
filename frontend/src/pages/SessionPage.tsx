@@ -12,6 +12,7 @@ import AccountPanel from '@/components/AccountPanel';
 import ReviewPanel from '@/components/ReviewPanel';
 import DerivativesStrip from '@/components/DerivativesStrip';
 import InstrumentPicker from '@/components/InstrumentPicker';
+import ScanCard from '@/components/ScanCard';
 import ActiveSession from '@/components/ActiveSession';
 import { Alert, Button, Card } from '@/components/ui';
 import { planProblems } from '@/lib/risk';
@@ -196,6 +197,13 @@ export default function SessionPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-4">
           <Card><PriceChart inst={shownInst} lastPrice={ticker?.last ?? null} levels={levels} /></Card>
+          <ScanCard
+            current={shownInst}
+            onSelect={(i) => { setInst(i); setForm(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            aiConfigured={settings.ai_configured}
+            scanTime={settings.scan_time}
+            scanEnabled={settings.scan_enabled}
+          />
           {!viewingActive && latest && (
             <AnalysisCard
               analysis={latest}

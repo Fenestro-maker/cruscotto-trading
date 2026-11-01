@@ -47,6 +47,8 @@ export interface Settings {
   instruments: string[];
   profit_alert_usd: number;
   review_every_hours: number; // 0 = ricontrollo automatico spento
+  scan_enabled: boolean;      // classifica del mattino
+  scan_time: string;          // "HH:MM", ora italiana
   rules: Rules;
   ai_configured: boolean;
   ai_model: string;
@@ -312,6 +314,35 @@ export const accountApi = {
   get: () => api.get<Account>('/account'),
 };
 
+// Classifica del mattino
+export interface ScanItem {
+  instrument: string;
+  score: number;
+  direction: 'long' | 'short' | 'none';
+  setup: SetupKey;
+  level: number | null;
+  note: string;
+  price: number;
+  tech_score: number;
+}
+
+export interface Scan {
+  id: string;
+  created_at: string;
+  trigger: 'manuale' | 'automatico';
+  weekend: boolean;
+  status: 'ok' | 'errore';
+  error?: string;
+  items: ScanItem[];
+  market_note: string;
+  stats: { followed?: number; analyzed?: number; to_ai?: number; closed?: number; illiquid?: number; not_crypto?: number };
+}
+
+export const scansApi = {
+  latest: () => api.get<{ scan: Scan | null; running: boolean }>('/scans/latest'),
+  run: () => api.post<Scan>('/scans', {}, { timeout: 900_000 }),
+};
+
 export const authApi = {
   login: (email: string, password: string) =>
     api.post<{ access_token: string; user: User }>('/auth/login', { email, password }),
@@ -319,7 +350,7 @@ export const authApi = {
 
 export const settingsApi = {
   get: () => api.get<Settings>('/settings'),
-  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments' | 'profit_alert_usd' | 'review_every_hours'>) => api.put<Settings>('/settings', data),
+  update: (data: Pick<Settings, 'capital' | 'risk_pct' | 'leverage' | 'instruments' | 'profit_alert_usd' | 'review_every_hours' | 'scan_enabled' | 'scan_time'>) => api.put<Settings>('/settings', data),
 };
 
 export interface NotificationItem {

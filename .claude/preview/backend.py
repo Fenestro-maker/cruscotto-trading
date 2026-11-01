@@ -64,10 +64,11 @@ async def fake_okx_public(path: str, params: dict) -> list:
     if "instId" not in params and path in ("/api/v5/public/instruments", "/api/v5/public/open-interest", "/api/v5/market/tickers"):
         ids = FAKE_INSTRUMENTS.get(params.get("instType", ""), [])
         if path == "/api/v5/public/instruments":
-            return [{"instId": i} for i in ids]
+            crypto_free = ("BZ-", "CL-", "XAU-", "XAG-", "SPY-", "QQQ-", "US100-", "NVDA-", "AAPL-", "TSLA-")
+            return [{"instId": i, "instCategory": "1" if not i.startswith(crypto_free) else "3"} for i in ids]
         if path == "/api/v5/public/open-interest":
             return [{"instId": i, "oiCcy": "152.0"} for i in ids]
-        return [{"instId": i, "last": fake_series("15m")[0][4]} for i in ids]
+        return [{"instId": i, "last": fake_series("15m")[0][4], "volCcy24h": "50000"} for i in ids]
     inst = params.get("instId", "ETH-USDC-SWAP")
     if path == "/api/v5/market/candles":
         return fake_series(params["bar"])[: int(params.get("limit", 100))]
@@ -90,8 +91,17 @@ async def fake_okx_public(path: str, params: dict) -> list:
     return []
 
 
-async def fake_ask_claude(system: str, user_text: str, schema=None):
+async def fake_ask_claude(system: str, user_text: str, schema=None, model="", effort=""):
     last = float(fake_series("15m")[0][4])
+    if schema and "items" in schema.get("properties", {}):
+        insts = schema["properties"]["items"]["items"]["properties"]["instrument"]["enum"]
+        rnd = random.Random(len(insts))
+        return {
+            "market_note": "[CLASSIFICA DI PROVA, non generata da Claude] Crypto in recupero, dollaro stabile.",
+            "items": [{"instrument": i, "score": rnd.randint(3, 8), "direction": rnd.choice(["long", "short"]),
+                       "setup": "pullback_trend", "level": round(last - rnd.uniform(5, 30), 1),
+                       "note": f"Attendere il ritorno su {last - 20:.0f} con rifiuto sul 15m."} for i in insts],
+        }, {"model": "simulato", "input_tokens": 0, "output_tokens": 0}
     if schema is server.REVIEW_SCHEMA:
         return {
             "verdict": "modifica",
