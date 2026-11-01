@@ -44,7 +44,7 @@ Screenshot nella scratchpad, anche a larghezza telefono (390×844).
 
 ## Git e rilascio
 
-- Lavora sul ramo indicato dalla sessione, mai su `main`. Il titolare fa il merge della Pull Request; la VPS fa `git pull` di `main`.
+- Lavora sul ramo indicato dalla sessione, mai su `main`. Apri una Pull Request e, dopo le verifiche (build, lint, prova in preview), **fai tu il merge** su `main`: il titolare l'ha autorizzato (01/11/2026). Poi indica al titolare i comandi da lanciare sulla VPS, che fa `git pull` di `main`.
 - Non committare `.env`, `dist/`, `node_modules/`, `venv/`.
 
 ## Produzione (VPS)
